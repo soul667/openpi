@@ -15,6 +15,8 @@ from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
 
+_PROBE = False
+
 
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
@@ -192,6 +194,19 @@ class Pi0(_model.BaseModel):
         preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
+        if _PROBE:
+            jax.debug.print("[probe-in] state nan={} inf={} max={} | actions nan={} inf={} max={}",
+                            jnp.isnan(observation.state).any(), jnp.isinf(observation.state).any(),
+                            jnp.abs(observation.state).max(),
+                            jnp.isnan(actions).any(), jnp.isinf(actions).any(),
+                            jnp.abs(actions).max())
+            for k, v in observation.images.items():
+                jax.debug.print("[probe-in] img {} nan={} inf={} min={} max={}",
+                                k, jnp.isnan(v).any(), jnp.isinf(v).any(), v.min(), v.max())
+            if observation.tokenized_prompt is not None:
+                jax.debug.print("[probe-in] prompt min={} max={}",
+                                observation.tokenized_prompt.min(), observation.tokenized_prompt.max())
+
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
@@ -199,9 +214,27 @@ class Pi0(_model.BaseModel):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        # one big forward pass of prefix + suffix at once
+        if _PROBE:
+            jax.debug.print("[probe-mid] x_t nan={} inf={} max={} | u_t nan={} inf={} max={}",
+                            jnp.isnan(x_t).any(), jnp.isinf(x_t).any(), jnp.abs(x_t).max(),
+                            jnp.isnan(u_t).any(), jnp.isinf(u_t).any(), jnp.abs(u_t).max())
+
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(observation, x_t, time)
+
+        if _PROBE:
+            jax.debug.print("[probe-emb] prefix_tokens nan={} inf={} max={} | suffix_tokens nan={} inf={} max={}",
+                            jnp.isnan(prefix_tokens).any(), jnp.isinf(prefix_tokens).any(),
+                            jnp.abs(prefix_tokens).max(),
+                            jnp.isnan(suffix_tokens).any(), jnp.isinf(suffix_tokens).any(),
+                            jnp.abs(suffix_tokens).max())
+            jax.debug.print("[probe-emb] dtype prefix={} suffix={}",
+                            prefix_tokens.dtype, suffix_tokens.dtype)
+            if adarms_cond is not None:
+                jax.debug.print("[probe-emb] adarms_cond nan={} inf={} max={} dtype={}",
+                                jnp.isnan(adarms_cond).any(), jnp.isinf(adarms_cond).any(),
+                                jnp.abs(adarms_cond).max(), adarms_cond.dtype)
+
         input_mask = jnp.concatenate([prefix_mask, suffix_mask], axis=1)
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
@@ -209,7 +242,17 @@ class Pi0(_model.BaseModel):
         (prefix_out, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
+
+        if _PROBE:
+            jax.debug.print("[probe-out] suffix_out nan={} inf={} max={}",
+                            jnp.isnan(suffix_out).any(), jnp.isinf(suffix_out).any(),
+                            jnp.abs(suffix_out).max())
+
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        if _PROBE:
+            jax.debug.print("[probe-out] v_t nan={} inf={} max={}",
+                            jnp.isnan(v_t).any(), jnp.isinf(v_t).any(), jnp.abs(v_t).max())
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 

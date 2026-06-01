@@ -38,6 +38,8 @@ import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 import openpi.training.sharding as sharding
 
+_BLOCK_PROBE = False
+
 PALIGEMMA_VOCAB_SIZE = 257_152
 
 
@@ -329,6 +331,12 @@ class Block(nn.Module):
         out = jax.tree.map(lambda x: drop(x, deterministic), out)
         xs = [_gated_residual(x, y, gate) for x, y, gate in zip(xs, out, gates, strict=True)]
         xs = sharding.activation_sharding_constraint(xs)
+
+        if _BLOCK_PROBE:
+            for i, x in enumerate(xs):
+                if x is not None:
+                    jax.debug.print("[probe-block expert={}] post_ffw nan={} inf={} max={}",
+                                    i, jnp.isnan(x).any(), jnp.isinf(x).any(), jnp.abs(x).max())
 
         return xs, kv_cache
 

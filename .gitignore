@@ -170,3 +170,16 @@ datasets/lerobot_fold_50.zip
 .gitignore
 .gitignore
 datasets/lerobot_put_cup_black_50.zip
+
+# Local runtime/output files that break `git add -A` or should never be committed.
+nohup.out
+openpi_portable*.tar.gz
+openpi_portable*.tar
+.sisyphus/
+docker_fix/_volumes/
+docker_fix/_assets_stage/*
+!docker_fix/_assets_stage/.gitkeep
+tools/openpi-ui/.data/secrets.json
+tools/openpi-ui/tsconfig.tsbuildinfo
+tools/openpi-ui/node_modules/
+tools/openpi-ui/dist/

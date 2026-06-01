@@ -1,0 +1,64 @@
+# Portable compose for openpi.
+#
+# 用法 (在仓库根目录):
+#   cp docker_fix/.env.example docker_fix/.env   # 按需改宿主机路径 / GPU
+#   docker compose -f docker_fix/compose.yml --env-file docker_fix/.env up -d --build
+#   docker compose -f docker_fix/compose.yml --env-file docker_fix/.env exec openpi bash
+#
+# 镜像导出 / 离线分发:
+#   docker save openpi_portable:latest | gzip > openpi_portable.tar.gz
+#   # 在新机器上:
+#   gunzip -c openpi_portable.tar.gz | docker load
+
+services:
+  openpi:
+    image: ${IMAGE_NAME:-openpi_portable}:${IMAGE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: docker_fix/openpi.Dockerfile
+      network: ${BUILD_NETWORK:-host}
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04@sha256:2d913b09e6be8387e1a10976933642c73c840c0b735f0bf3c28d97fc9bc422e0}
+        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.5.1}
+        INCLUDE_ASSETS: ${INCLUDE_ASSETS:-lean}
+        APT_MIRROR: ${APT_MIRROR:-}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-localhost,127.0.0.1}
+    container_name: ${CONTAINER_NAME:-openpi}
+    init: true
+    tty: true
+    stdin_open: true
+    network_mode: ${NETWORK_MODE:-host}
+    ipc: host
+    shm_size: ${SHM_SIZE:-32gb}
+    working_dir: /app
+    command: ${SERVICE_COMMAND:-bash}
+    environment:
+      - SERVER_ARGS=${SERVER_ARGS:-}
+      - OPENPI_DATA_HOME=/openpi_assets
+      - HF_HOME=/root/.cache/huggingface
+      - JAX_COMPILATION_CACHE_DIR=/jax_cache
+      - IS_DOCKER=true
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # 宿主机仓库挂到 /app, 源码靠 git 同步, 容器里改动即时生效.
+      # 镜像里的 /opt/venv 不会被覆盖, 所以依赖照常可用.
+      - ${SRC_DIR:-..}:/app
+      - ${OPENPI_ASSETS_DIR:-./_volumes/openpi_assets}:/openpi_assets
+      - ${DATASET_DIR:-./_volumes/dataset}:/dataset
+      - ${HF_CACHE_DIR:-./_volumes/hf_cache}:/root/.cache/huggingface
+      - ${JAX_CACHE_DIR:-./_volumes/jax_cache}:/jax_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-all}
+              capabilities: [gpu]

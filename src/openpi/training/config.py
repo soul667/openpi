@@ -1088,11 +1088,12 @@ _CONFIGS = [
     # 用于美团的训练配置
     TrainConfig(
         name="pi05_mtbot",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, dtype="float32"),
+        # model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
         data=LeRobotRcvlabDataConfig(
             # repo_id="hdh/lerobot_put_cup_black_50",
             # repo_id="hdh/lerobot_fold_50",
-            repo_id="luobai/mtbot_move",
+            repo_id="luobai/pick_bag",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
@@ -1103,13 +1104,55 @@ _CONFIGS = [
         #     decay_steps=1_000_000,
         #     decay_lr=5e-5,
         # ),
-        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-        ema_decay=0.999,
-        # ema_decay=None,
+        # lr_schedule=_optimizer.CosineDecaySchedule(
+        #     warmup_steps=1000,
+        #     peak_lr=1e-5,
+        #     decay_steps=10000,
+        #     decay_lr=1e-6,
+        # ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=0.5),
+        # ema_decay=0.999,
+        ema_decay=None,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         # weight_loader=weight_loaders.CheckpointWeightLoader("/home/hdh/projects/ConfidenceRLinf/Models/openpi_jax_pi05_base/pi05_base/params"),
-        num_train_steps=10000,
+        num_train_steps=2000,
         save_interval=2000,
+    ),
+    TrainConfig(
+        name="pi05_mtbot_lora",
+
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10,
+                                    # discrete_state_input=False,
+                                   paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+
+       data=LeRobotRcvlabDataConfig(
+            # repo_id="hdh/lerobot_put_cup_black_50",
+            # repo_id="hdh/lerobot_fold_50",
+            repo_id="luobai/pick_bag",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=10_000,
+        # Again, make sure to match the model config above when extracting the freeze filter
+        # that specifies which parameters should be frozen during LoRA finetuning.
+        freeze_filter=
+        pi0_config.Pi0Config(pi05=True, action_horizon=10,
+                            #  discrete_state_input=False,
+                             paligemma_variant="gemma_2b_lora",
+                             action_expert_variant="gemma_300m_lora"
+                             ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+        wandb_enabled=True,
+        # batch_size=32, #use fault 32
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
     ),
     #
     # RoboArena configs.
