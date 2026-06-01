@@ -1,4 +1,4 @@
-import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, JobRecord, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, TrainJobRequest } from './types';
+import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, JobRecord, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteHost, TrainJobRequest } from './types';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
@@ -18,6 +18,8 @@ export const api = {
   getConfigs: () => fetchJson<ConfigInfo[]>('/api/configs'),
   getJobs: () => fetchJson<JobRecord[]>('/api/jobs'),
   getGpu: () => fetchJson<GpuSnapshot>('/api/gpu'),
+  getRemotes: () => fetchJson<RemoteHost[]>('/api/remotes'),
+  getRemoteGpu: (id: string) => fetchJson<GpuSnapshot>(`/api/remotes/${encodeURIComponent(id)}/gpu`),
   getWandbSecret: () => fetchJson<{ hasKey: boolean; maskedKey: string | null }>('/api/secrets/wandb'),
   saveWandbSecret: (key: string) =>
     fetchJson<{ hasKey: boolean; maskedKey: string | null }>('/api/secrets/wandb', {

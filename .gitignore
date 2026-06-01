@@ -180,6 +180,9 @@ docker_fix/_volumes/
 docker_fix/_assets_stage/*
 !docker_fix/_assets_stage/.gitkeep
 tools/openpi-ui/.data/secrets.json
+tools/openpi-ui/.data/
 tools/openpi-ui/tsconfig.tsbuildinfo
 tools/openpi-ui/node_modules/
 tools/openpi-ui/dist/
+!tools/openpi-ui/server/lib/
+!tools/openpi-ui/server/lib/remotes.ts

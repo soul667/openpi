@@ -32,11 +32,17 @@ export interface JobRecord {
   configName: string;
   expName?: string;
   repoId?: string;
+  targetHostId?: string;
+  targetLabel?: string;
+  remoteLogFile?: string;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
   exitCode?: number;
   pid?: number;
+  pgid?: number;
+  autoRestartCount?: number;
+  autoRestartReason?: string;
   request: unknown;
 }
 
@@ -62,6 +68,17 @@ export interface TrainJobRequest {
   cudaVisibleDevices?: string;
   xlaMemFraction?: number;
   keepPeriod?: number;
+  targetHostId?: string;
+  syncDataset?: boolean;
+}
+
+export interface RemoteHost {
+  id: string;
+  label: string;
+  sshTarget: string;
+  repoRoot: string;
+  datasetRoot?: string;
+  containerName?: string;
 }
 
 export interface GpuInfo {

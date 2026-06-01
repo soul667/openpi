@@ -18,7 +18,7 @@ import {
 import { ThunderboltOutlined, RocketOutlined } from "@ant-design/icons";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
-import { ConfigInfo, DatasetInfo, JobRecord } from "../api/types";
+import { ConfigInfo, DatasetInfo, GpuSnapshot, JobRecord, RemoteHost } from "../api/types";
 import { useJobsStore } from "../store/jobs";
 import { WandbSecretCard } from "../components/WandbSecretCard";
 import { PreCommandCard } from "../components/PreCommandCard";
@@ -40,6 +40,8 @@ export function TrainLauncher() {
 
   const [configs, setConfigs] = useState<ConfigInfo[]>([]);
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [remotes, setRemotes] = useState<RemoteHost[]>([]);
+  const [remoteGpu, setRemoteGpu] = useState<GpuSnapshot | null>(null);
   const [trainForm] = Form.useForm();
   const [normForm] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
@@ -54,6 +56,7 @@ export function TrainLauncher() {
   useEffect(() => {
     api.getConfigs().then(setConfigs).catch((e) => message.error(`configs: ${e.message}`));
     api.getDatasets().then(setDatasets).catch((e) => message.error(`datasets: ${e.message}`));
+    api.getRemotes().then(setRemotes).catch((e) => message.error(`remotes: ${e.message}`));
   }, []);
 
   useEffect(() => {
@@ -80,6 +83,8 @@ export function TrainLauncher() {
       wandbEnabled: true,
       cudaVisibleDevices: ["0", "1"],
       xlaMemFraction: 0.9,
+      targetHostId: "local",
+      syncDataset: true,
     });
     normForm.setFieldsValue({});
   }, [trainForm, normForm]);
@@ -114,6 +119,13 @@ export function TrainLauncher() {
   const wandbEnabled = Form.useWatch("wandbEnabled", trainForm);
   const overwrite = Form.useWatch("overwrite", trainForm);
   const resume = Form.useWatch("resume", trainForm);
+  const targetHostId = Form.useWatch("targetHostId", trainForm);
+
+  useEffect(() => {
+    setRemoteGpu(null);
+    if (!targetHostId || targetHostId === "local") return;
+    api.getRemoteGpu(targetHostId).then(setRemoteGpu).catch((e) => message.error(`remote gpu: ${e.message}`));
+  }, [targetHostId]);
 
   const submitTrain = async () => {
     const values = await trainForm.validateFields();
@@ -130,6 +142,8 @@ export function TrainLauncher() {
         logInterval: values.logInterval,
         saveInterval: values.saveInterval,
         keepPeriod: values.keepPeriod,
+        targetHostId: values.targetHostId,
+        syncDataset: values.syncDataset,
         overwrite: values.overwrite,
         resume: values.resume,
         wandbEnabled: values.wandbEnabled,
@@ -239,7 +253,28 @@ export function TrainLauncher() {
             ),
             children: (
               <Form form={trainForm} layout="vertical">
-                <Form.Item name="configName" label="Config" rules={[{ required: true }]}>
+                <Space size="large" wrap>
+                  <Form.Item name="targetHostId" label="Training target" tooltip="Local 或远端 SSH 服务器">
+                    <Select
+                      options={remotes.map((h) => ({ value: h.id, label: h.label }))}
+                      style={{ minWidth: 260 }}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="syncDataset"
+                    label="rsync dataset"
+                    valuePropName="checked"
+                    tooltip="远端训练前把当前 Repo ID 对应的数据集同步到远端 datasetRoot"
+                  >
+                    <Switch disabled={!targetHostId || targetHostId === "local"} />
+                  </Form.Item>
+                </Space>
+                {targetHostId && targetHostId !== "local" && (
+                  <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+                    Remote GPU: {remoteGpu?.available ? `${remoteGpu.gpus.length} GPUs · ${remoteGpu.gpus.map((g) => `GPU${g.index}:${g.memoryFreeMib}MiB free`).join(" · ")}` : remoteGpu?.error || "checking..."}
+                  </Typography.Paragraph>
+                )}
+                <Form.Item name="configName" label="Config" rules={[{ required: true }]}> 
                   {configSelect}
                 </Form.Item>
                 <Form.Item name="expName" label="Experiment name" rules={[{ required: true }]}>

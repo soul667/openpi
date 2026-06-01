@@ -131,6 +131,84 @@ gunzip -c openpi_portable_lean.tar.gz | docker load
 # .env 里把 OPENPI_ASSETS_DIR 指到 ~/.cache/openpi
 ```
 
+## 给 openpi-ui 远端训练用的目标服务器配置
+
+`tools/openpi-ui` 的远端训练逻辑会做三件事：
+
+1. 本机 UI 根据 `Repo ID=user/dataset` 把数据集 rsync 到远端宿主机：
+   `REMOTE.datasetRoot/user/dataset`
+2. 本机 UI 通过 SSH 在远端执行：
+   `docker exec -d <containerName> bash -lc "uv run scripts/train.py ..."`
+3. 本机 UI 通过 SSH 读取远端宿主机上的：
+   `REMOTE.repoRoot/logs/<job>.log`
+
+因此远端服务器的 compose **必须**把 rsync 目标目录挂进容器。推荐直接用这里的模板：
+
+```bash
+cd /data2/axgu/code/openpi
+cp docker_fix/.env.remote-example docker_fix/.env
+docker compose -f docker_fix/compose.yml --env-file docker_fix/.env up -d --no-build
+```
+
+`.env.remote-example` 的关键挂载是：
+
+```env
+CONTAINER_NAME=openpi
+SRC_DIR=..
+OPENPI_ASSETS_DIR=/data2/axgu/.cache/openpi
+HF_CACHE_DIR=/data2/axgu/.cache/huggingface
+DATASET_DIR=/data2/axgu/.cache/huggingface/lerobot
+JAX_CACHE_DIR=/data2/axgu/jaxcache
+```
+
+compose 会把：
+
+```text
+/data2/axgu/.cache/huggingface  ->  /root/.cache/huggingface
+```
+
+所以 UI rsync 到远端宿主机的：
+
+```text
+/data2/axgu/.cache/huggingface/lerobot/<user>/<dataset>
+```
+
+容器里能直接看到：
+
+```text
+/root/.cache/huggingface/lerobot/<user>/<dataset>
+```
+
+远端服务器启动后，用本机验证：
+
+```bash
+ssh axgu@10.16.117.238 "docker ps --format '{{.Names}}' | grep '^openpi$'"
+ssh axgu@10.16.117.238 "docker exec openpi ls /app/scripts/train.py"
+ssh axgu@10.16.117.238 "docker exec openpi ls /root/.cache/huggingface/lerobot"
+ssh axgu@10.16.117.238 "nvidia-smi --query-gpu=index,name,memory.free --format=csv,noheader,nounits"
+```
+
+如果再加远端服务器，在本机 UI 的：
+
+```text
+tools/openpi-ui/.data/remotes.json
+```
+
+加入新 profile，例如：
+
+```json
+{
+  "id": "srv-117-238",
+  "label": "axgu@10.16.117.238",
+  "sshTarget": "axgu@10.16.117.238",
+  "repoRoot": "/data2/axgu/code/openpi",
+  "datasetRoot": "/data2/axgu/.cache/huggingface/lerobot",
+  "containerName": "openpi"
+}
+```
+
+`datasetRoot` 必须和远端 `.env.remote-example` 里的 `DATASET_DIR` / `HF_CACHE_DIR` 对应，否则数据只会到远端宿主机，容器里看不到。
+
 ## 关于 finetune checkpoints
 
 `/data2/axgu/code/openpi/checkpoints/` 那 432 GB 没有打进镜像，理由：

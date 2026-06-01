@@ -76,6 +76,8 @@ export function RerunModal({ job, onClose, onLaunched }: Props) {
           logInterval: v.logInterval,
           saveInterval: v.saveInterval,
           keepPeriod: v.keepPeriod,
+          targetHostId: v.targetHostId,
+          syncDataset: v.syncDataset,
           overwrite: v.overwrite,
           resume: v.resume,
           wandbEnabled: v.wandbEnabled,

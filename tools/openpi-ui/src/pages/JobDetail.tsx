@@ -88,6 +88,8 @@ export function JobDetail() {
             <Descriptions.Item label="Config">{job.configName}</Descriptions.Item>
             <Descriptions.Item label="Exp">{job.expName || "-"}</Descriptions.Item>
             <Descriptions.Item label="Repo">{job.repoId || "-"}</Descriptions.Item>
+            <Descriptions.Item label="Target">{job.targetLabel || job.targetHostId || "Local"}</Descriptions.Item>
+            <Descriptions.Item label="NaN restarts">{job.autoRestartCount ?? 0}</Descriptions.Item>
             <Descriptions.Item label="Created">
               {new Date(job.createdAt).toLocaleString()}
             </Descriptions.Item>
@@ -106,6 +108,13 @@ export function JobDetail() {
                 {job.logFile}
               </Typography.Text>
             </Descriptions.Item>
+            {job.remoteLogFile && (
+              <Descriptions.Item label="Remote log">
+                <Typography.Text code copyable style={{ fontSize: 12 }}>
+                  {job.remoteLogFile}
+                </Typography.Text>
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="Command" span={2}>
               <pre
                 style={{
