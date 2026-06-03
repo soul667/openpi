@@ -1125,6 +1125,30 @@ _CONFIGS = [
         save_interval=2000,
     ),
     TrainConfig(
+        name="pi05_mtbot_bf16_ema099",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10),
+        data=LeRobotRcvlabDataConfig(
+            # repo_id="hdh/lerobot_put_cup_black_50",
+            # repo_id="hdh/lerobot_fold_50",
+            repo_id="luobai/pick_bag",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=0.000025,
+            decay_steps=10000,
+            decay_lr=0.0000025,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=0.5),
+        ema_decay=0.99,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        # weight_loader=weight_loaders.CheckpointWeightLoader("/home/hdh/projects/ConfidenceRLinf/Models/openpi_jax_pi05_base/pi05_base/params"),
+        num_train_steps=10000,
+        save_interval=2000,
+    ),
+    TrainConfig(
         name="pi05_mtbot_lora",
 
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10,
