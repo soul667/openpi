@@ -15,6 +15,12 @@ function pctColor(pct: number) {
   return "#52c41a";
 }
 
+function safeMemoryPercent(usedMib: number, totalMib: number) {
+  if (!Number.isFinite(usedMib) || !Number.isFinite(totalMib) || totalMib <= 0) return null;
+  const pct = (usedMib / totalMib) * 100;
+  return Number.isFinite(pct) ? pct : null;
+}
+
 export function GpuHeaderStrip() {
   const [snap, setSnap] = useState<GpuSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,17 +68,17 @@ export function GpuHeaderStrip() {
             title: "Memory",
             key: "mem",
             render: (_: unknown, g) => {
-              const pct = (g.memoryUsedMib / g.memoryTotalMib) * 100;
+              const pct = safeMemoryPercent(g.memoryUsedMib, g.memoryTotalMib);
               return (
                 <Space direction="vertical" size={0} style={{ width: 180 }}>
                   <Progress
-                    percent={pct}
+                    percent={pct ?? 0}
                     showInfo={false}
-                    strokeColor={pctColor(pct)}
+                    strokeColor={pct === null ? "#d9d9d9" : pctColor(pct)}
                     size="small"
                   />
                   <span style={{ fontSize: 11, color: "#888" }}>
-                    {fmtMib(g.memoryUsedMib)} / {fmtMib(g.memoryTotalMib)} ({Math.round(pct)}%)
+                    {fmtMib(g.memoryUsedMib)} / {fmtMib(g.memoryTotalMib)} ({pct === null ? "-" : `${Math.round(pct)}%`})
                   </span>
                 </Space>
               );

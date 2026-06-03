@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DATA_DIR, HF_LEROBOT_HOST } from "./paths.js";
-import { GpuInfo, GpuProcInfo, GpuSnapshot, RemoteHost } from "./types.js";
+import { DATA_DIR, HF_LEROBOT_HOST, REPO_ROOT } from "./paths.js";
+import { GpuInfo, GpuProcInfo, GpuSnapshot, RemoteCheckpointInfo, RemoteHost } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 const REMOTES_FILE = path.join(DATA_DIR, "remotes.json");
@@ -15,6 +15,16 @@ const DEFAULT_REMOTES: RemoteHost[] = [
     sshTarget: "axgu@10.16.117.238",
     repoRoot: "/data2/axgu/code/openpi",
     datasetRoot: "/data2/axgu/.cache/huggingface/lerobot",
+    checkpointRoot: "/data2/axgu/code/openpi/checkpoints",
+    containerName: "openpi",
+  },
+  {
+    id: "srv-82-201",
+    label: "blzou@10.20.82.201",
+    sshTarget: "blzou@10.20.82.201",
+    repoRoot: "/data2/blzou/code/openpi",
+    datasetRoot: "/data2/blzou/.cache/huggingface/lerobot",
+    checkpointRoot: "/data2/blzou/code/openpi/checkpoints",
     containerName: "openpi",
   },
 ];
@@ -30,7 +40,9 @@ function readRemotesFile(): RemoteHost[] {
     return DEFAULT_REMOTES;
   }
   try {
-    return JSON.parse(fs.readFileSync(REMOTES_FILE, "utf8")) as RemoteHost[];
+    const configured = JSON.parse(fs.readFileSync(REMOTES_FILE, "utf8")) as RemoteHost[];
+    const existing = new Set(configured.map((h) => h.id));
+    return [...configured, ...DEFAULT_REMOTES.filter((h) => !existing.has(h.id))];
   } catch {
     return DEFAULT_REMOTES;
   }
@@ -45,10 +57,18 @@ export function getRemoteHost(id?: string): RemoteHost | null {
   return readRemotesFile().find((h) => h.id === id) ?? null;
 }
 
+function sshBaseArgs(host: RemoteHost): string[] {
+  return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...(host.sshArgs || []), host.sshTarget];
+}
+
+function rsyncSsh(host: RemoteHost): string {
+  return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...(host.sshArgs || [])].map(shellArg).join(" ");
+}
+
 export async function sshExec(host: RemoteHost, bashCmd: string, maxBuffer = 16 * 1024 * 1024): Promise<{ stdout: string; stderr: string }> {
   const { stdout, stderr } = await execFileAsync(
     "ssh",
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host.sshTarget, `bash -lc ${shellArg(bashCmd)}`],
+    [...sshBaseArgs(host), `bash -lc ${shellArg(bashCmd)}`],
     { maxBuffer },
   );
   return { stdout, stderr };
@@ -147,9 +167,19 @@ export async function syncDatasetToRemote(host: RemoteHost, repoId?: string): Pr
   await sshExec(host, `mkdir -p ${shellArg(remoteParent)}`);
   await execFileAsync(
     "rsync",
-    ["-az", `${localDir}/`, `${host.sshTarget}:${path.posix.join(remoteParent, dataset)}/`],
+    ["-az", "-e", rsyncSsh(host), `${localDir}/`, `${host.sshTarget}:${path.posix.join(remoteParent, dataset)}/`],
     { maxBuffer: 8 * 1024 * 1024 },
   );
+}
+
+export async function syncTrainingAssetsToRemote(host: RemoteHost, configName: string): Promise<void> {
+  const localDir = path.join(REPO_ROOT, "assets", configName);
+  if (!fs.existsSync(localDir)) return;
+  const remoteDir = path.posix.join(host.repoRoot, "assets", configName);
+  await sshExec(host, `mkdir -p ${shellArg(remoteDir)}`);
+  await execFileAsync("rsync", ["-az", "-e", rsyncSsh(host), `${localDir}/`, `${host.sshTarget}:${remoteDir}/`], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
 }
 
 function parseCsv(text: string): string[][] {
@@ -185,4 +215,41 @@ export async function getRemoteGpuSnapshot(host: RemoteHost): Promise<GpuSnapsho
   } catch (e: unknown) {
     return { available: false, error: (e as Error).message, gpus: [], processes: [], at: Date.now() };
   }
+}
+
+export async function listRemoteCheckpoints(host: RemoteHost): Promise<RemoteCheckpointInfo[]> {
+  const root = host.checkpointRoot || path.posix.join(host.repoRoot, "checkpoints");
+  const { stdout } = await sshExec(
+    host,
+    `test -d ${shellArg(root)} || exit 0; find ${shellArg(root)} -mindepth 1 -maxdepth 2 -type d -printf '%P\t%T@\n' | sort`,
+    16 * 1024 * 1024,
+  );
+  return stdout
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [relativePath, mtimeRaw] = line.split("\t");
+      return {
+        hostId: host.id,
+        hostLabel: host.label,
+        relativePath,
+        remotePath: path.posix.join(root, relativePath),
+        mtimeMs: Math.round(parseFloat(mtimeRaw || "0") * 1000),
+      };
+    });
+}
+
+export async function pullRemoteCheckpoint(host: RemoteHost, relativePath: string): Promise<{ localPath: string; remotePath: string }> {
+  if (!relativePath || relativePath.startsWith("/") || relativePath.includes("..")) {
+    throw new Error("invalid checkpoint path");
+  }
+  const remoteRoot = host.checkpointRoot || path.posix.join(host.repoRoot, "checkpoints");
+  const remotePath = path.posix.join(remoteRoot, relativePath);
+  const localPath = path.join(REPO_ROOT, "checkpoints", relativePath);
+  fs.mkdirSync(path.dirname(localPath), { recursive: true });
+  await execFileAsync("rsync", ["-az", "-e", rsyncSsh(host), `${host.sshTarget}:${remotePath}/`, `${localPath}/`], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return { localPath, remotePath };
 }

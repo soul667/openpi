@@ -1,9 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { message } from 'antd';
 import '@xterm/xterm/css/xterm.css';
-import { openLogSocket } from '../api/client';
+import { api, openLogSocket } from '../api/client';
 
 export const LogTerminal: React.FC<{ jobId: string }> = ({ jobId }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -38,6 +37,23 @@ export const LogTerminal: React.FC<{ jobId: string }> = ({ jobId }) => {
     let reconnectAttempts = 0;
     const maxAttempts = 5;
     let userScrolled = false;
+    let offset = 0;
+    let pollTimer: number | null = null;
+    let httpHasWritten = false;
+    const byteLength = (s: string) => new TextEncoder().encode(s).length;
+    const setOffset = (nextOffset: number) => {
+      if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+        offset = nextOffset;
+      }
+    };
+    const writeLog = (data: string) => {
+      if (!data) return;
+      term.write(data, () => {
+        if (!userScrolled) {
+          term.scrollToBottom();
+        }
+      });
+    };
 
     term.onScroll((pos) => {
       const isAtBottom = pos >= term.buffer.active.baseY - 5;
@@ -47,15 +63,11 @@ export const LogTerminal: React.FC<{ jobId: string }> = ({ jobId }) => {
     const connect = () => {
       ws = openLogSocket(jobId, {
         onData: (data) => {
-          term.write(data, () => {
-            if (!userScrolled) {
-              term.scrollToBottom();
-            }
-          });
+          if (httpHasWritten) return;
+          setOffset(offset + byteLength(data));
+          writeLog(data);
         },
-        onStatus: (status, exitCode) => {
-          message.info(`Job status: ${status} ${exitCode !== undefined ? `(Exit: ${exitCode})` : ''}`);
-        },
+        onStatus: () => {},
         onEnd: () => {
           term.write('\n\r[Connection Closed]\n\r');
         }
@@ -70,9 +82,23 @@ export const LogTerminal: React.FC<{ jobId: string }> = ({ jobId }) => {
     };
 
     connect();
+    const poll = async () => {
+      try {
+        if (!Number.isFinite(offset) || offset < 0) return;
+        const res = await api.getJobLog(jobId, offset);
+        if (res.chunk) {
+          setOffset(res.nextByte);
+          httpHasWritten = true;
+          writeLog(res.chunk);
+        }
+      } catch {}
+    };
+    poll();
+    pollTimer = window.setInterval(poll, 2000);
 
     return () => {
       resizeObserver.disconnect();
+      if (pollTimer !== null) window.clearInterval(pollTimer);
       if (ws) ws.close();
       term.dispose();
     };

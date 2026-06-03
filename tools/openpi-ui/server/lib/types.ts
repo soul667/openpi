@@ -11,6 +11,7 @@ export interface DatasetInfo {
   totalVideos?: number;
   fps?: number;
   robotType?: string;
+  taskPrompts?: string[];
   codebaseVersion?: string;
   sizeBytes?: number;
   hasInfoJson: boolean;
@@ -43,15 +44,26 @@ export interface TrainJobRequest {
   keepPeriod?: number;
   targetHostId?: string;
   syncDataset?: boolean;
+  assetId?: string;
 }
 
 export interface RemoteHost {
   id: string;
   label: string;
   sshTarget: string;
+  sshArgs?: string[];
   repoRoot: string;
   datasetRoot?: string;
+  checkpointRoot?: string;
   containerName?: string;
+}
+
+export interface RemoteCheckpointInfo {
+  hostId: string;
+  hostLabel: string;
+  relativePath: string;
+  remotePath: string;
+  mtimeMs: number;
 }
 
 export interface GpuInfo {
@@ -97,6 +109,7 @@ export interface JobRecord {
   configName: string;
   expName?: string;
   repoId?: string;
+  assetId?: string;
   targetHostId?: string;
   targetLabel?: string;
   remoteLogFile?: string;

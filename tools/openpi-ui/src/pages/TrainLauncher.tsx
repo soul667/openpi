@@ -45,6 +45,7 @@ export function TrainLauncher() {
   const [trainForm] = Form.useForm();
   const [normForm] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [availableAssetNorms, setAvailableAssetNorms] = useState<Array<{ assetId: string; path: string; mtimeMs: number; sizeBytes: number }>>([]);
   const initialTab = searchParams.get("tab") === "norm" ? "norm" : "train";
   const [tab, setTab] = useState(initialTab);
 
@@ -97,6 +98,17 @@ export function TrainLauncher() {
     normForm.setFieldValue("configName", normForm.getFieldValue("configName") || defaultName);
   }, [configs, trainForm, normForm]);
 
+  useEffect(() => {
+    const cfg = trainForm.getFieldValue("configName");
+    if (!cfg) {
+      setAvailableAssetNorms([]);
+      return;
+    }
+    api.listConfigAssetNorms(cfg)
+      .then((r) => setAvailableAssetNorms(r.assets || []))
+      .catch(() => setAvailableAssetNorms([]));
+  }, [trainForm.getFieldValue("configName")]);
+
   const datasetOptions = useMemo(
     () => datasets.map((d) => ({ value: d.repoId, label: d.repoId })),
     [datasets],
@@ -136,6 +148,7 @@ export function TrainLauncher() {
         configName: values.configName,
         expName: values.expName,
         repoId: values.repoId,
+        assetId: values.assetId,
         numTrainSteps: values.numTrainSteps,
         seed: values.seed,
         batchSize: values.batchSize,
@@ -287,6 +300,27 @@ export function TrainLauncher() {
                   rules={[{ required: true }, { pattern: /^[\w.\-]+\/[\w.\-]+$/, message: "format: user/dataset" }]}
                 >
                   <AutoComplete options={datasetOptions} placeholder="luobai/pick_bag" />
+                </Form.Item>
+
+                <Form.Item
+                  name="assetId"
+                  label="Norm asset ID（可选）"
+                  tooltip="留空则默认使用 assets/<config>/<repoId> 下的 norm。选择其他（如 pooled 结果 luobai_pooled）后，启动前会把对应 norm 复制替换到当前 repo 位置（带 .bak），并传 --data.assets.asset-id 让本次训练使用它。用于解决小数据集 norm 不稳定导致的 nan。"
+                >
+                  <Select
+                    allowClear
+                    placeholder="默认（跟随 repoId）"
+                    options={[
+                      ...(trainForm.getFieldValue("repoId")
+                        ? [{ value: trainForm.getFieldValue("repoId"), label: `默认（${trainForm.getFieldValue("repoId")}）` }]
+                        : []),
+                      ...availableAssetNorms.map((a) => ({
+                        value: a.assetId,
+                        label: `${a.assetId}（${new Date(a.mtimeMs).toLocaleDateString()}）`,
+                      })),
+                    ]}
+                    onChange={(v) => trainForm.setFieldValue("assetId", v || undefined)}
+                  />
                 </Form.Item>
 
                 <Space size="large" wrap>

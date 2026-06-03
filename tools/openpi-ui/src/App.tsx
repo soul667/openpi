@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Layout, Menu, Space } from "antd";
 import {
+  CloudDownloadOutlined,
   DatabaseOutlined,
   RocketOutlined,
   UnorderedListOutlined,
@@ -10,6 +11,7 @@ import { DatasetPicker } from "./pages/DatasetPicker";
 import { TrainLauncher } from "./pages/TrainLauncher";
 import { JobList } from "./pages/JobList";
 import { JobDetail } from "./pages/JobDetail";
+import { Checkpoints } from "./pages/Checkpoints";
 import { ActiveJobPill } from "./components/ActiveJobPill";
 import { GpuHeaderStrip } from "./components/GpuHeaderStrip";
 import { startJobsPolling } from "./store/jobs";
@@ -20,6 +22,7 @@ const items = [
   { key: "/datasets", icon: <DatabaseOutlined />, label: <Link to="/datasets">Datasets</Link> },
   { key: "/train", icon: <RocketOutlined />, label: <Link to="/train">Train</Link> },
   { key: "/jobs", icon: <UnorderedListOutlined />, label: <Link to="/jobs">Jobs</Link> },
+  { key: "/checkpoints", icon: <CloudDownloadOutlined />, label: <Link to="/checkpoints">Checkpoints</Link> },
 ];
 
 export default function App() {
@@ -71,6 +74,7 @@ export default function App() {
             <Route path="/train" element={<TrainLauncher />} />
             <Route path="/jobs" element={<JobList />} />
             <Route path="/jobs/:id" element={<JobDetail />} />
+            <Route path="/checkpoints" element={<Checkpoints />} />
           </Routes>
         </Content>
       </Layout>

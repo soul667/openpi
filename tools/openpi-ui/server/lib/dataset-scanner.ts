@@ -4,6 +4,7 @@ import { HF_LEROBOT_HOST } from "./paths.js";
 import { DatasetInfo } from "./types.js";
 
 const SKIP = new Set([".locks", ".cache", ".gitattributes", "datasets--"]);
+const REPO_ID_PARAM = /^[A-Za-z0-9_.\-]+$/;
 
 interface LeRobotInfoJson {
   total_episodes?: number;
@@ -12,6 +13,65 @@ interface LeRobotInfoJson {
   fps?: number;
   robot_type?: string;
   codebase_version?: string;
+}
+
+interface TaskJsonLine {
+  task?: string;
+  [key: string]: unknown;
+}
+
+function readTasks(datasetDir: string): string[] {
+  const p = path.join(datasetDir, "meta", "tasks.jsonl");
+  if (!fs.existsSync(p)) return [];
+  const out: string[] = [];
+  try {
+    for (const line of fs.readFileSync(p, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      const task = JSON.parse(line) as { task?: string };
+      if (task.task && !out.includes(task.task)) out.push(task.task);
+    }
+  } catch {}
+  return out;
+}
+
+function normalizeTaskPrompts(taskPrompts: string[]): string[] {
+  const out: string[] = [];
+  for (const prompt of taskPrompts) {
+    const trimmed = prompt.trim();
+    if (trimmed && !out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+export function writeTasks(user: string, dataset: string, taskPrompts: string[]): string[] {
+  if (!REPO_ID_PARAM.test(user) || !REPO_ID_PARAM.test(dataset)) {
+    throw new Error("invalid repoId");
+  }
+  const datasetDir = path.join(HF_LEROBOT_HOST, user, dataset);
+  const resolvedBase = path.resolve(HF_LEROBOT_HOST);
+  const resolvedDataset = path.resolve(datasetDir);
+  if (!resolvedDataset.startsWith(`${resolvedBase}${path.sep}`) || !fs.existsSync(resolvedDataset)) {
+    throw new Error("dataset not found");
+  }
+  const metaDir = path.join(resolvedDataset, "meta");
+  fs.mkdirSync(metaDir, { recursive: true });
+  const normalized = normalizeTaskPrompts(taskPrompts);
+  const tasksPath = path.join(metaDir, "tasks.jsonl");
+  const existingRows: TaskJsonLine[] = [];
+  if (fs.existsSync(tasksPath)) {
+    for (const line of fs.readFileSync(tasksPath, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        existingRows.push(JSON.parse(line) as TaskJsonLine);
+      } catch {
+        existingRows.push({});
+      }
+    }
+  }
+  const rows = normalized.map((task, idx) => ({ ...(existingRows[idx] || {}), task }));
+  const content = rows.map((row) => JSON.stringify(row)).join("\n");
+  fs.writeFileSync(tasksPath, content ? `${content}\n` : "", "utf8");
+  return normalized;
 }
 
 function dirSize(dir: string): number {
@@ -78,6 +138,7 @@ export async function scanDatasets(): Promise<DatasetInfo[]> {
         totalVideos: info?.total_videos,
         fps: info?.fps,
         robotType: info?.robot_type,
+        taskPrompts: readTasks(datasetDir),
         codebaseVersion: info?.codebase_version,
         sizeBytes: dirSize(datasetDir),
         hasInfoJson,

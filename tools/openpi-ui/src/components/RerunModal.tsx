@@ -7,11 +7,13 @@ import {
   Modal,
   Select,
   Slider,
+  Space,
   Switch,
+  Typography,
   message,
 } from "antd";
 import { api } from "../api/client";
-import { DatasetInfo, JobRecord, NormStatsJobRequest, TrainJobRequest } from "../api/types";
+import { DatasetInfo, GpuSnapshot, JobRecord, NormStatsJobRequest, RemoteHost, TrainJobRequest } from "../api/types";
 import { WandbSecretCard } from "./WandbSecretCard";
 
 interface Props {
@@ -29,14 +31,24 @@ function nowStamp() {
 export function RerunModal({ job, onClose, onLaunched }: Props) {
   const [form] = Form.useForm();
   const [datasets, setDatasets] = useState<DatasetInfo[]>([]);
+  const [remotes, setRemotes] = useState<RemoteHost[]>([]);
+  const [remoteGpu, setRemoteGpu] = useState<GpuSnapshot | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const wandbEnabled = Form.useWatch("wandbEnabled", form);
+  const targetHostId = Form.useWatch("targetHostId", form);
 
   useEffect(() => {
     if (job) {
       api.getDatasets().then(setDatasets).catch(() => {});
+      api.getRemotes().then(setRemotes).catch(() => {});
     }
   }, [job]);
+
+  useEffect(() => {
+    setRemoteGpu(null);
+    if (!targetHostId || targetHostId === "local") return;
+    api.getRemoteGpu(targetHostId).then(setRemoteGpu).catch(() => {});
+  }, [targetHostId]);
 
   useEffect(() => {
     if (!job) return;
@@ -49,6 +61,8 @@ export function RerunModal({ job, onClose, onLaunched }: Props) {
           typeof r.cudaVisibleDevices === "string" && r.cudaVisibleDevices.length
             ? r.cudaVisibleDevices.split(",")
             : ["0"],
+        targetHostId: r.targetHostId || job.targetHostId || "local",
+        syncDataset: r.syncDataset ?? true,
         expName: `exp_${nowStamp()}`,
       });
     } else {
@@ -141,7 +155,23 @@ export function RerunModal({ job, onClose, onLaunched }: Props) {
 
           {isTrain ? (
             <>
-              <Form.Item name="expName" label="Experiment name" rules={[{ required: true }]}>
+              <Space size="large" wrap>
+                <Form.Item name="targetHostId" label="Training target">
+                  <Select
+                    options={remotes.map((h) => ({ value: h.id, label: h.label }))}
+                    style={{ minWidth: 260 }}
+                  />
+                </Form.Item>
+                <Form.Item name="syncDataset" label="rsync dataset" valuePropName="checked">
+                  <Switch disabled={!targetHostId || targetHostId === "local"} />
+                </Form.Item>
+              </Space>
+              {targetHostId && targetHostId !== "local" && (
+                <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+                  Remote GPU: {remoteGpu?.available ? `${remoteGpu.gpus.length} GPUs · ${remoteGpu.gpus.map((g) => `GPU${g.index}:${g.memoryFreeMib}MiB free`).join(" · ")}` : remoteGpu?.error || "checking..."}
+                </Typography.Paragraph>
+              )}
+              <Form.Item name="expName" label="Experiment name" rules={[{ required: true }]}> 
                 <Input />
               </Form.Item>
               <Form.Item name="numTrainSteps" label="num_train_steps">

@@ -582,7 +582,7 @@ class TrainConfig:
     num_train_steps: int = 30_000
 
     # How often (in steps) to log training metrics.
-    log_interval: int = 100
+    log_interval: int = 5
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
@@ -924,7 +924,7 @@ _CONFIGS = [
         ),
         num_train_steps=100_000,  # 100k steps should be sufficient, takes ~2 days on 8x H100s
         batch_size=256,
-        log_interval=100,
+        log_interval=5,
         save_interval=5000,
         keep_period=20_000,
         num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
@@ -958,7 +958,7 @@ _CONFIGS = [
         ),
         num_train_steps=100_000,
         batch_size=256,
-        log_interval=100,
+        log_interval=5,
         save_interval=5000,
         keep_period=10_000,
         num_workers=0,  # Important: RLDS DataLoader requires num_workers=0, handles multi-processing internally
@@ -1110,12 +1110,18 @@ _CONFIGS = [
         #     decay_steps=10000,
         #     decay_lr=1e-6,
         # ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1000,
+            peak_lr=0.000025,
+            decay_steps=10000,
+            decay_lr=0.0000025,
+        ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=0.5),
         # ema_decay=0.999,
         ema_decay=None,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         # weight_loader=weight_loaders.CheckpointWeightLoader("/home/hdh/projects/ConfidenceRLinf/Models/openpi_jax_pi05_base/pi05_base/params"),
-        num_train_steps=2000,
+        num_train_steps=10000,
         save_interval=2000,
     ),
     TrainConfig(

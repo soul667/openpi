@@ -154,6 +154,8 @@ Before we can run training, we need to compute the normalization statistics for 
 uv run scripts/compute_norm_stats.py --config-name pi05_libero
 ```
 
+**Tip for custom/small datasets**: if each individual `repo_id` is small, prefer `scripts/compute_pooled_norm_stats.py` (see the "Pooling normalization statistics..." paragraph below) so you obtain a single stable norm under a shared `asset_id`.
+
 Now we can kick off training with the following command (the `--overwrite` flag is used to overwrite existing checkpoints if you rerun fine-tuning with the same config):
 
 ```bash
@@ -163,6 +165,36 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_libero --exp-nam
 The command will log training progress to the console and save checkpoints to the `checkpoints` directory. You can also monitor training progress on the Weights & Biases dashboard. For maximally using the GPU memory, set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before running training -- this enables JAX to use up to 90% of the GPU memory (vs. the default of 75%).
 
 **Note:** We provide functionality for *reloading* normalization statistics for state / action normalization from pre-training. This can be beneficial if you are fine-tuning to a new task on a robot that was part of our pre-training mixture. For more details on how to reload normalization statistics, see the [norm_stats.md](docs/norm_stats.md) file.
+
+**Pooling normalization statistics for small/custom datasets (highly recommended for new robots)**
+
+When your individual datasets are small (common with custom robots such as multiple `luobai/*` collections), computing `norm_stats` on a single `repo_id` frequently produces unreliable per-dimension statistics — very small `std`, `q01` or `q99` on rarely used joints or the gripper. After normalization this leads to exploding values and immediate `loss=nan` / `grad_norm=nan` at step 0 (especially visible with π₀.₅ + quantile normalization). The project already documents this exact failure mode in the troubleshooting table below.
+
+Instead of per-dataset norms, **pool the raw data** from all related datasets and save the result under a *stable* `asset_id` (decoupled from any single `repo_id`). All training/inference runs that point at this `asset_id` will then use the same robust statistics.
+
+We provide a dedicated helper:
+
+```bash
+# Example for all your luobai collections (adapt the list and config name)
+GIT_LFS_SKIP_SMUDGE=1 uv run scripts/compute_pooled_norm_stats.py \
+  --config-name=pi05_mtbot \
+  --asset-id=luobai_all \
+  --repo-ids \
+      luobai/pick_bag_3 luobai/pick_bag_2 luobai/pick_bag_1 \
+      luobai/pick_bag luobai/move_cup_to_shelf luobai/mtbot_move
+```
+
+The pooled `norm_stats.json` will be written to `assets/<config-name>/luobai_all/norm_stats.json`.
+
+**Using the pooled norm**
+
+- **Command line**: add `--data.assets.asset-id=luobai_all` (you can still override `--data.repo-id` to train on whichever individual dataset you like).
+- **openpi-ui (tools/openpi-ui)**: the "开始训练" tab now contains a "Norm asset ID（可选）" dropdown that automatically lists every available norm under the chosen config (including your newly created pooled profiles). Selecting one (e.g. `luobai_all`) will:
+  - pass the correct `--data.assets.asset-id=...` flag, **and**
+  - before launching the training job (and before any remote asset sync), copy the chosen `norm_stats.json` into the default location that the repoId would use (`assets/<config>/<repoId>/norm_stats.json`, with a timestamped `.bak` backup). This is the "select different norm file → server manually replaces before training starts" workflow.
+- You can (and should) afterwards open the result in the UI's Norm Stats editor and manually raise any remaining near-zero spans on dimensions that are intentionally low-variance on your robot.
+
+See `scripts/compute_pooled_norm_stats.py --help` for more options (`--max-frames`, per-dataset limits, etc.). The same `asset_id` pattern also works for inference configs and the policy server.
 
 ### 3. Spinning up a policy server and running inference
 
@@ -320,4 +352,4 @@ We will collect common issues and their solutions here. If you encounter an issu
 | CUDA/GPU errors                           | Verify NVIDIA drivers are installed correctly. For Docker, ensure nvidia-container-toolkit is installed. Check GPU compatibility. You do NOT need CUDA libraries installed at a system level --- they will be installed via uv. You may even want to try *uninstalling* system CUDA libraries if you run into CUDA issues, since system libraries can sometimes cause conflicts. |
 | Import errors when running examples       | Make sure you've installed all dependencies with `uv sync`. Some examples may have additional requirements listed in their READMEs.                    |
 | Action dimensions mismatch                | Verify your data processing transforms match the expected input/output dimensions of your robot. Check the action space definitions in your policy classes.                                  |
-| Diverging training loss                            | Check the `q01`, `q99`, and `std` values in `norm_stats.json` for your dataset. Certain dimensions that are rarely used can end up with very small `q01`, `q99`, or `std` values, leading to huge states and actions after normalization. You can manually adjust the norm stats as a workaround. |
+| Diverging training loss                            | Check the `q01`, `q99`, and `std` values in `norm_stats.json` for your dataset. Certain dimensions that are rarely used can end up with very small `q01`, `q99`, or `std` values, leading to huge states and actions after normalization (common with small per-dataset collections on custom robots). Use `scripts/compute_pooled_norm_stats.py` to pool raw data across all your related datasets under a stable `asset_id` (see the training section above). You can also manually adjust individual values in the UI Norm Stats editor as a quick workaround. |

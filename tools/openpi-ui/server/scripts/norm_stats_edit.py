@@ -33,6 +33,26 @@ def cmd_list(args):
     return 0
 
 
+def cmd_list_config_assets(args):
+    cfg_dir = ASSETS_ROOT / args.config
+    results = []
+    if cfg_dir.exists() and cfg_dir.is_dir():
+        for p in sorted(cfg_dir.rglob("norm_stats.json")):
+            try:
+                rel = str(p.parent.relative_to(cfg_dir))
+            except ValueError:
+                rel = str(p.parent)
+            st = p.stat()
+            results.append({
+                "assetId": rel,
+                "path": str(p),
+                "mtimeMs": int(st.st_mtime * 1000),
+                "sizeBytes": st.st_size,
+            })
+    print(json.dumps({"configName": args.config, "assets": results}))
+    return 0
+
+
 def parse_norm_stats(payload: dict):
     norm_stats = payload.get("norm_stats", payload)
     out = {}
@@ -169,6 +189,10 @@ def main():
     s_patch.add_argument("--overrides", required=True)
     s_patch.add_argument("--backup", action="store_true")
     s_patch.set_defaults(func=cmd_patch)
+
+    s_list_cfg = sub.add_parser("list-config-assets")
+    s_list_cfg.add_argument("--config", required=True)
+    s_list_cfg.set_defaults(func=cmd_list_config_assets)
 
     args = p.parse_args()
     return args.func(args)

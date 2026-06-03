@@ -34,6 +34,7 @@ import {
   remoteParseExitCode,
   remoteReadLogChunk,
   syncDatasetToRemote,
+  syncTrainingAssetsToRemote,
 } from "../lib/remotes.js";
 
 if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -43,8 +44,8 @@ const NAME_RE = /^[A-Za-z0-9_.\-]+$/;
 const NAN_TOKEN_RE = /(^|[^A-Za-z0-9_])nan([^A-Za-z0-9_]|$)/i;
 const MAX_NAN_RESTARTS = 3;
 
-function blockIfActive(): JobRecord | null {
-  const active = jobsStore.getActive();
+function blockIfActive(targetHostId = "local"): JobRecord | null {
+  const active = jobsStore.getActiveForTarget(targetHostId);
   return active || null;
 }
 
@@ -58,6 +59,29 @@ function buildNormCmd(jobId: string, req: NormStatsJobRequest): string {
   const preStr = pre ? `${pre} && ` : "";
   const inner = `cd /app && ${preStr}mkdir -p logs && GIT_LFS_SKIP_SMUDGE=1 nohup uv run scripts/compute_norm_stats.py ${flags} > logs/${jobId}.log 2>&1; echo __EXIT__:$? >> logs/${jobId}.log`;
   return inner;
+}
+
+function replaceNormForRun(configName: string, repoId: string | undefined, assetId: string | undefined): { src: string; dst: string; backup: string | null } | null {
+  if (!configName || !repoId || !assetId) return null;
+  const src = path.join(REPO_ROOT, "assets", configName, assetId, "norm_stats.json");
+  if (!fs.existsSync(src)) return null;
+  const segs = repoId.split("/").filter((s) => s.length > 0);
+  const dstDir = path.join(REPO_ROOT, "assets", configName, ...segs);
+  const dst = path.join(dstDir, "norm_stats.json");
+  if (src === dst) return null;
+  try {
+    fs.mkdirSync(dstDir, { recursive: true });
+    let backup: string | null = null;
+    if (fs.existsSync(dst)) {
+      backup = dst + ".bak." + Date.now();
+      fs.copyFileSync(dst, backup);
+    }
+    fs.copyFileSync(src, dst);
+    return { src, dst, backup };
+  } catch (e) {
+    console.error("norm replace failed", e);
+    return null;
+  }
 }
 
 function buildTrainCmd(jobId: string, req: TrainJobRequest, redact: boolean, appendLog = false): string {
@@ -82,6 +106,7 @@ function buildTrainCmd(jobId: string, req: TrainJobRequest, redact: boolean, app
     req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
     req.resume ? "--resume" : null,
     req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
+    req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
   ];
   const flags = joinFlags(cliFlags);
   const envStr = env.join(" ");
@@ -305,7 +330,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       reply.code(400);
       return { error: "invalid repoId, expect user/dataset" };
     }
-    const active = blockIfActive();
+    const active = blockIfActive("local");
     if (active) {
       reply.code(409);
       return { error: "another job is active", activeJob: active };
@@ -359,21 +384,35 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       reply.code(400);
       return { error: "unknown remote host" };
     }
-    const active = blockIfActive();
+    const active = blockIfActive(body.targetHostId || "local");
     if (active) {
       reply.code(409);
       return { error: "another job is active", activeJob: active };
     }
-    if (remoteHost && body.syncDataset !== false) {
-      await syncDatasetToRemote(remoteHost, body.repoId);
+
+    const replaceInfo = replaceNormForRun(body.configName, body.repoId, body.assetId);
+
+    let containerRunning = false;
+    try {
+      if (remoteHost && body.syncDataset !== false) {
+        await syncDatasetToRemote(remoteHost, body.repoId);
+        await syncTrainingAssetsToRemote(remoteHost, body.configName);
+      }
+      containerRunning = remoteHost ? await remoteContainerRunning(remoteHost) : await dockerContainerRunning();
+    } catch (e: unknown) {
+      reply.code(500);
+      return { error: `remote setup failed: ${(e as Error).message}` };
     }
-    const containerRunning = remoteHost ? await remoteContainerRunning(remoteHost) : await dockerContainerRunning();
     if (!containerRunning) {
       reply.code(503);
       return { error: remoteHost ? `remote docker container is not running: ${remoteHost.label}` : "docker container is not running" };
     }
     const jobId = generateJobId(`train_${body.expName}`);
     const resolvedKey = body.wandbApiKey?.trim() || getWandbKey() || undefined;
+    if (body.wandbEnabled && !resolvedKey) {
+      reply.code(400);
+      return { error: "wandb is enabled but no API key is saved; set the key in the WandB card or disable wandb" };
+    }
     const resolvedBody: TrainJobRequest = { ...body, wandbApiKey: resolvedKey };
     const realCmd = buildTrainCmd(jobId, resolvedBody, false);
     const safeCmd = buildTrainCmd(jobId, resolvedBody, true);
@@ -389,6 +428,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       configName: body.configName,
       expName: body.expName,
       repoId: body.repoId,
+      assetId: body.assetId,
       targetHostId: body.targetHostId || "local",
       targetLabel: remoteHost?.label || "Local",
       createdAt: Date.now(),
@@ -470,6 +510,16 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         const tailer = remoteHost ? null : new LogTailer(job.logFile, 0);
         let remoteOffset = 0;
         let remoteTimer: NodeJS.Timeout | null = null;
+        const pollRemoteLog = async () => {
+          if (!remoteHost) return;
+          try {
+            const chunk = await remoteReadLogChunk(remoteHost, job.remoteLogFile || job.logFile, remoteOffset);
+            remoteOffset = chunk.nextByte;
+            if (chunk.chunk && socket.readyState === socket.OPEN) {
+              socket.send(JSON.stringify({ type: "data", data: chunk.chunk }));
+            }
+          } catch {}
+        };
         if (tailer) {
           tailer.on("data", (chunk: string) => {
             if (socket.readyState === socket.OPEN) {
@@ -477,15 +527,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
             }
           });
         } else if (remoteHost) {
-          remoteTimer = setInterval(async () => {
-            try {
-              const chunk = await remoteReadLogChunk(remoteHost, job.remoteLogFile || job.logFile, remoteOffset);
-              remoteOffset = chunk.nextByte;
-              if (chunk.chunk && socket.readyState === socket.OPEN) {
-                socket.send(JSON.stringify({ type: "data", data: chunk.chunk }));
-              }
-            } catch {}
-          }, 1000);
+          pollRemoteLog().catch(() => {});
+          remoteTimer = setInterval(() => pollRemoteLog().catch(() => {}), 1000);
         }
         const onChange = (changed: JobRecord) => {
           if (changed.id !== id) return;
@@ -499,7 +542,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
             changed.status === "failed" ||
             changed.status === "killed"
           ) {
-            setTimeout(() => {
+            setTimeout(async () => {
+              await pollRemoteLog();
               if (socket.readyState === socket.OPEN) {
                 socket.send(JSON.stringify({ type: "end" }));
                 socket.close();

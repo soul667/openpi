@@ -138,4 +138,24 @@ export async function normStatsRoutes(fastify: FastifyInstance) {
       return { error: (e as Error).message };
     }
   });
+
+  const NAME_RE = /^[A-Za-z0-9_.\-]+$/;
+  fastify.get<{ Params: { configName: string } }>(
+    "/api/configs/:configName/asset-norms",
+    async (req, reply) => {
+      const cfg = req.params.configName;
+      if (!NAME_RE.test(cfg)) {
+        reply.code(400);
+        return { error: "invalid configName" };
+      }
+      const cmd = `python3 ${SCRIPT} list-config-assets --config ${shellArg(cfg)}`;
+      try {
+        const parsed = await runScript<{ configName: string; assets: Array<{ assetId: string; path: string; mtimeMs: number; sizeBytes: number }> }>(cmd);
+        return parsed;
+      } catch (e: unknown) {
+        reply.code(500);
+        return { error: (e as Error).message };
+      }
+    }
+  );
 }

@@ -1,4 +1,4 @@
-import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, JobRecord, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteHost, TrainJobRequest } from './types';
+import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, JobRecord, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteCheckpointInfo, RemoteHost, TrainJobRequest } from './types';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
@@ -15,11 +15,28 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getDatasets: () => fetchJson<DatasetInfo[]>('/api/datasets'),
+  updateDatasetPrompts: (user: string, name: string, taskPrompts: string[]) =>
+    fetchJson<DatasetInfo>(`/api/datasets/${encodeURIComponent(user)}/${encodeURIComponent(name)}/prompts`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskPrompts }),
+    }),
   getConfigs: () => fetchJson<ConfigInfo[]>('/api/configs'),
   getJobs: () => fetchJson<JobRecord[]>('/api/jobs'),
   getGpu: () => fetchJson<GpuSnapshot>('/api/gpu'),
   getRemotes: () => fetchJson<RemoteHost[]>('/api/remotes'),
   getRemoteGpu: (id: string) => fetchJson<GpuSnapshot>(`/api/remotes/${encodeURIComponent(id)}/gpu`),
+  getRemoteCheckpoints: (id: string) =>
+    fetchJson<{ checkpoints: RemoteCheckpointInfo[] }>(`/api/remotes/${encodeURIComponent(id)}/checkpoints`),
+  pullRemoteCheckpoint: (id: string, relativePath: string) =>
+    fetchJson<{ ok: boolean; localPath: string; remotePath: string }>(
+      `/api/remotes/${encodeURIComponent(id)}/checkpoints/pull`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ relativePath }),
+      },
+    ),
   getWandbSecret: () => fetchJson<{ hasKey: boolean; maskedKey: string | null }>('/api/secrets/wandb'),
   saveWandbSecret: (key: string) =>
     fetchJson<{ hasKey: boolean; maskedKey: string | null }>('/api/secrets/wandb', {
@@ -58,6 +75,10 @@ export const api = {
       },
     ),
   killJob: (id: string) => fetchJson<JobRecord>(`/api/jobs/${id}/kill`, { method: 'POST' }),
+  getJobLog: (id: string, from: number) =>
+    fetchJson<{ chunk: string; nextByte: number; eof: boolean }>(
+      `/api/jobs/${encodeURIComponent(id)}/log?from=${from}`,
+    ),
   launchNormStats: (req: NormStatsJobRequest) =>
     fetchJson<JobRecord>('/api/jobs/norm-stats', {
       method: 'POST',
@@ -70,6 +91,10 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
     }),
+  listConfigAssetNorms: (configName: string) =>
+    fetchJson<{ configName: string; assets: Array<{ assetId: string; path: string; mtimeMs: number; sizeBytes: number }> }>(
+      `/api/configs/${encodeURIComponent(configName)}/asset-norms`,
+    ),
   listNormStats: (user: string, name: string) =>
     fetchJson<NormStatsList>(
       `/api/datasets/${encodeURIComponent(user)}/${encodeURIComponent(name)}/norm-stats`,
