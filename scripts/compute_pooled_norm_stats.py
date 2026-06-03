@@ -86,6 +86,9 @@ def main(
     repo_ids: Sequence[str],
     max_frames: int | None = None,
     max_frames_per_dataset: int | None = None,
+    normalize_gripper_scale: bool = True,
+    gripper_scale_threshold: float = 1.5,
+    gripper_max_value: float = 98.0,
 ):
     """Compute ONE stable norm by pooling raw episodes from several LeRobot repos.
 
@@ -160,7 +163,11 @@ def main(
         desc = f"pooling {rid}"
         for batch in tqdm.tqdm(loader, total=nbatches, desc=desc):
             for key in keys:
-                arr = np.asarray(batch[key])
+                arr = np.asarray(batch[key]).copy()
+                if normalize_gripper_scale and arr.shape[-1] > 0:
+                    gripper = arr[..., -1]
+                    if np.nanmax(gripper) > gripper_scale_threshold:
+                        arr[..., -1] = np.clip(gripper / gripper_max_value, 0.0, 1.0)
                 pooled_stats[key].update(arr)
                 total_samples += arr.shape[0] if arr.ndim > 1 else 1
 
