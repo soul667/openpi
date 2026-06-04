@@ -44,9 +44,44 @@ const NAME_RE = /^[A-Za-z0-9_.\-]+$/;
 const NAN_TOKEN_RE = /(^|[^A-Za-z0-9_])nan([^A-Za-z0-9_]|$)/i;
 const MAX_NAN_RESTARTS = 3;
 
-function blockIfActive(targetHostId = "local"): JobRecord | null {
-  const active = jobsStore.getActiveForTarget(targetHostId);
-  return active || null;
+function parseGpuList(cudaVisibleDevices: string | undefined): Set<number> | null {
+  if (!cudaVisibleDevices) return null;
+  const gpus = new Set<number>();
+  for (const part of cudaVisibleDevices.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const num = parseInt(trimmed, 10);
+    if (!Number.isNaN(num)) {
+      gpus.add(num);
+    }
+  }
+  return gpus.size > 0 ? gpus : null;
+}
+
+function gpusOverlap(newGpus: Set<number> | null, existingGpus: Set<number> | null): boolean {
+  // If either job doesn't specify GPUs, assume it uses all GPUs (conservative)
+  if (!newGpus || !existingGpus) return true;
+  for (const gpu of newGpus) {
+    if (existingGpus.has(gpu)) return true;
+  }
+  return false;
+}
+
+function blockIfActive(targetHostId = "local", newCudaVisibleDevices?: string): JobRecord | null {
+  const activeJobs = jobsStore.getAllActiveForTarget(targetHostId);
+  if (activeJobs.length === 0) return null;
+
+  const newGpus = parseGpuList(newCudaVisibleDevices);
+
+  for (const activeJob of activeJobs) {
+    const activeRequest = activeJob.request as TrainJobRequest;
+    const activeGpus = parseGpuList(activeRequest.cudaVisibleDevices);
+    if (gpusOverlap(newGpus, activeGpus)) {
+      return activeJob;
+    }
+  }
+
+  return null;
 }
 
 function buildNormCmd(jobId: string, req: NormStatsJobRequest): string {
@@ -85,36 +120,61 @@ function replaceNormForRun(configName: string, repoId: string | undefined, asset
 }
 
 function buildTrainCmd(jobId: string, req: TrainJobRequest, redact: boolean, appendLog = false): string {
+  const isTorch = !!req.usePytorch;
   const env: string[] = [];
   if (req.cudaVisibleDevices) env.push(`CUDA_VISIBLE_DEVICES=${req.cudaVisibleDevices}`);
-  if (req.xlaMemFraction !== undefined) env.push(`XLA_PYTHON_CLIENT_MEM_FRACTION=${req.xlaMemFraction}`);
+  if (!isTorch && req.xlaMemFraction !== undefined) env.push(`XLA_PYTHON_CLIENT_MEM_FRACTION=${req.xlaMemFraction}`);
   if (req.wandbEnabled) {
     env.push(`WANDB_MODE=online`);
     if (req.wandbApiKey) env.push(`WANDB_API_KEY=${redact ? "***" : req.wandbApiKey}`);
   } else {
     env.push(`WANDB_MODE=disabled`);
   }
-  const cliFlags: Array<string | null> = [
-    `--exp-name=${req.expName}`,
-    req.repoId ? `--data.repo-id=${req.repoId}` : null,
-    req.numTrainSteps !== undefined ? `--num-train-steps=${req.numTrainSteps}` : null,
-    req.seed !== undefined ? `--seed=${req.seed}` : null,
-    req.batchSize !== undefined ? `--batch-size=${req.batchSize}` : null,
-    req.logInterval !== undefined ? `--log-interval=${req.logInterval}` : null,
-    req.saveInterval !== undefined ? `--save-interval=${req.saveInterval}` : null,
-    req.keepPeriod !== undefined ? `--keep-period=${req.keepPeriod}` : null,
-    req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
-    req.resume ? "--resume" : null,
-    req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
-    req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
-  ];
-  const flags = joinFlags(cliFlags);
-  const envStr = env.join(" ");
   const pre = (getPreCommand() || "").trim();
   const preStr = pre ? `${pre} && ` : "";
   const redirect = appendLog ? ">>" : ">";
-  const inner = `cd /app && ${preStr}mkdir -p logs && ${envStr} nohup uv run scripts/train.py ${req.configName} ${flags} ${redirect} logs/${jobId}.log 2>&1; echo __EXIT__:$? >> logs/${jobId}.log`;
-  return inner;
+  const envStr = env.join(" ");
+
+  if (isTorch) {
+    const nproc = req.cudaVisibleDevices ? req.cudaVisibleDevices.split(",").filter(Boolean).length : 1;
+    const cliFlags: Array<string | null> = [
+      `--exp-name=${req.expName}`,
+      req.repoId ? `--data.repo-id=${req.repoId}` : null,
+      req.numTrainSteps !== undefined ? `--num-train-steps=${req.numTrainSteps}` : null,
+      req.seed !== undefined ? `--seed=${req.seed}` : null,
+      req.batchSize !== undefined ? `--batch-size=${req.batchSize}` : null,
+      req.logInterval !== undefined ? `--log-interval=${req.logInterval}` : null,
+      req.saveInterval !== undefined ? `--save-interval=${req.saveInterval}` : null,
+      req.keepPeriod !== undefined ? `--keep-period=${req.keepPeriod}` : null,
+      req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
+      req.resume ? "--resume" : null,
+      req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
+      req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
+      req.pytorchTrainingPrecision ? `--pytorch-training-precision=${req.pytorchTrainingPrecision}` : null,
+    ];
+    const flags = joinFlags(cliFlags);
+    const torchPrefix = `uv run torchrun --standalone --nnodes=1 --nproc_per_node=${nproc} `;
+    const inner = `cd /app && ${preStr}mkdir -p logs && ${envStr} nohup ${torchPrefix}scripts/train_pytorch.py ${req.configName} ${flags} ${redirect} logs/${jobId}.log 2>&1; echo __EXIT__:$? >> logs/${jobId}.log`;
+    return inner;
+  } else {
+    const cliFlags: Array<string | null> = [
+      `--exp-name=${req.expName}`,
+      req.repoId ? `--data.repo-id=${req.repoId}` : null,
+      req.numTrainSteps !== undefined ? `--num-train-steps=${req.numTrainSteps}` : null,
+      req.seed !== undefined ? `--seed=${req.seed}` : null,
+      req.batchSize !== undefined ? `--batch-size=${req.batchSize}` : null,
+      req.logInterval !== undefined ? `--log-interval=${req.logInterval}` : null,
+      req.saveInterval !== undefined ? `--save-interval=${req.saveInterval}` : null,
+      req.keepPeriod !== undefined ? `--keep-period=${req.keepPeriod}` : null,
+      req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
+      req.resume ? "--resume" : null,
+      req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
+      req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
+    ];
+    const flags = joinFlags(cliFlags);
+    const inner = `cd /app && ${preStr}mkdir -p logs && ${envStr} nohup uv run scripts/train.py ${req.configName} ${flags} ${redirect} logs/${jobId}.log 2>&1; echo __EXIT__:$? >> logs/${jobId}.log`;
+    return inner;
+  }
 }
 
 async function attachLifecycle(jobId: string, restartRequest?: TrainJobRequest) {
@@ -228,22 +288,24 @@ async function attachLifecycle(jobId: string, restartRequest?: TrainJobRequest) 
 }
 
 async function killJobHard(jobId: string, kind: "norm-stats" | "train", pgid?: number | null): Promise<{ stillAlive: number[] }> {
-  const scriptName = kind === "train" ? "scripts/train.py" : "scripts/compute_norm_stats.py";
+  const scriptNames = kind === "train" ? ["scripts/train.py", "scripts/train_pytorch.py"] : ["scripts/compute_norm_stats.py"];
   if (pgid) {
     await dockerKillPgid(pgid, "TERM");
   }
   await dockerPkill(`logs/${jobId}.log`);
-  await dockerPkill(scriptName);
+  for (const sn of scriptNames) await dockerPkill(sn);
   await new Promise((r) => setTimeout(r, 2000));
-  let alive = await dockerPgrepAll(scriptName);
+  let alive: number[] = [];
+  for (const sn of scriptNames) alive = alive.concat(await dockerPgrepAll(sn));
   if (pgid && alive.length) {
     await dockerKillPgid(pgid, "KILL");
   }
   if (alive.length) {
     await dockerPkill9(`logs/${jobId}.log`);
-    await dockerPkill9(scriptName);
+    for (const sn of scriptNames) await dockerPkill9(sn);
     await new Promise((r) => setTimeout(r, 1500));
-    alive = await dockerPgrepAll(scriptName);
+    alive = [];
+    for (const sn of scriptNames) alive = alive.concat(await dockerPgrepAll(sn));
   }
   return { stillAlive: alive };
 }
@@ -255,10 +317,9 @@ async function killRemoteJobHard(jobId: string, pgid?: number | null): Promise<v
   if (pgid) await remoteDockerKillPgid(host, pgid, "TERM");
   await remoteDockerPkill(host, `logs/${jobId}.log`);
   await remoteDockerPkill(host, "scripts/train.py");
-  await new Promise((r) => setTimeout(r, 2000));
-  if (pgid) await remoteDockerKillPgid(host, pgid, "KILL");
-  await remoteDockerPkill(host, `logs/${jobId}.log`, true);
+  await remoteDockerPkill(host, "scripts/train_pytorch.py");
   await remoteDockerPkill(host, "scripts/train.py", true);
+  await remoteDockerPkill(host, "scripts/train_pytorch.py", true);
 }
 
 function parseExitCode(logFile: string): number | null {
@@ -384,7 +445,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       reply.code(400);
       return { error: "unknown remote host" };
     }
-    const active = blockIfActive(body.targetHostId || "local");
+    const active = blockIfActive(body.targetHostId || "local", body.cudaVisibleDevices);
     if (active) {
       reply.code(409);
       return { error: "another job is active", activeJob: active };

@@ -40,6 +40,14 @@ class JobsStore extends EventEmitter {
     );
   }
 
+  getAllActiveForTarget(targetHostId: string): JobRecord[] {
+    return this.jobs.filter(
+      (j) =>
+        (j.status === "queued" || j.status === "running") &&
+        (j.targetHostId || "local") === targetHostId,
+    );
+  }
+
   add(job: JobRecord): JobRecord {
     this.jobs.push(job);
     this.persist();

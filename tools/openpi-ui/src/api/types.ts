@@ -73,6 +73,8 @@ export interface TrainJobRequest {
   targetHostId?: string;
   syncDataset?: boolean;
   assetId?: string;
+  usePytorch?: boolean;
+  pytorchTrainingPrecision?: 'bfloat16' | 'float32';
 }
 
 export interface RemoteHost {

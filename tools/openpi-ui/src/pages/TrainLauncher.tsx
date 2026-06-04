@@ -49,6 +49,8 @@ export function TrainLauncher() {
   const initialTab = searchParams.get("tab") === "norm" ? "norm" : "train";
   const [tab, setTab] = useState(initialTab);
 
+  const watchedConfig = Form.useWatch("configName", trainForm);
+
   useEffect(() => {
     const t = searchParams.get("tab");
     if (t === "norm" || t === "train") setTab(t);
@@ -85,6 +87,8 @@ export function TrainLauncher() {
       cudaVisibleDevices: ["0", "1"],
       xlaMemFraction: 0.9,
       targetHostId: "local",
+      usePytorch: false,
+      pytorchTrainingPrecision: "float32",
       syncDataset: true,
     });
     normForm.setFieldsValue({});
@@ -99,15 +103,14 @@ export function TrainLauncher() {
   }, [configs, trainForm, normForm]);
 
   useEffect(() => {
-    const cfg = trainForm.getFieldValue("configName");
-    if (!cfg) {
+    if (!watchedConfig) {
       setAvailableAssetNorms([]);
       return;
     }
-    api.listConfigAssetNorms(cfg)
+    api.listConfigAssetNorms(watchedConfig)
       .then((r) => setAvailableAssetNorms(r.assets || []))
       .catch(() => setAvailableAssetNorms([]));
-  }, [trainForm.getFieldValue("configName")]);
+  }, [watchedConfig]);
 
   const datasetOptions = useMemo(
     () => datasets.map((d) => ({ value: d.repoId, label: d.repoId })),
@@ -132,6 +135,7 @@ export function TrainLauncher() {
   const overwrite = Form.useWatch("overwrite", trainForm);
   const resume = Form.useWatch("resume", trainForm);
   const targetHostId = Form.useWatch("targetHostId", trainForm);
+  const usePytorch = Form.useWatch("usePytorch", trainForm);
 
   useEffect(() => {
     setRemoteGpu(null);
@@ -162,6 +166,8 @@ export function TrainLauncher() {
         wandbEnabled: values.wandbEnabled,
         cudaVisibleDevices: cuda,
         xlaMemFraction: values.xlaMemFraction,
+        usePytorch: values.usePytorch,
+        pytorchTrainingPrecision: values.pytorchTrainingPrecision,
       });
       navigate(`/jobs/${job.id}`);
     } catch (e: unknown) {
@@ -287,6 +293,29 @@ export function TrainLauncher() {
                     Remote GPU: {remoteGpu?.available ? `${remoteGpu.gpus.length} GPUs · ${remoteGpu.gpus.map((g) => `GPU${g.index}:${g.memoryFreeMib}MiB free`).join(" · ")}` : remoteGpu?.error || "checking..."}
                   </Typography.Paragraph>
                 )}
+                <Form.Item
+                  name="usePytorch"
+                  label="Use PyTorch (torchrun + DDP, experimental)"
+                  valuePropName="checked"
+                  tooltip="使用 PyTorch 训练脚本而非 JAX (scripts/train_pytorch.py + torchrun DDP)。对 A6000 等 Ampere 硬件可能更稳定（绕过 JAX TF32/数值问题）。bf16 默认。其他服务器上运行需确保其 /data/.../openpi 代码包含 train_pytorch.py（git pull 对应分支），且容器支持 torch。"
+                >
+                  <Switch />
+                </Form.Item>
+                {usePytorch && (
+                  <Form.Item
+                    name="pytorchTrainingPrecision"
+                    label="PyTorch precision"
+                    tooltip="bfloat16 省内存但可能仍有数值问题；float32 最稳定但内存/慢。"
+                  >
+                    <Select
+                      options={[
+                        { value: "bfloat16", label: "bfloat16 (default, faster, less mem)" },
+                        { value: "float32", label: "float32 (most stable, more mem)" },
+                      ]}
+                      style={{ width: 280 }}
+                    />
+                  </Form.Item>
+                )}
                 <Form.Item name="configName" label="Config" rules={[{ required: true }]}> 
                   {configSelect}
                 </Form.Item>
@@ -307,20 +336,35 @@ export function TrainLauncher() {
                   label="Norm asset ID（可选）"
                   tooltip="留空则默认使用 assets/<config>/<repoId> 下的 norm。选择其他（如 pooled 结果 luobai_pooled）后，启动前会把对应 norm 复制替换到当前 repo 位置（带 .bak），并传 --data.assets.asset-id 让本次训练使用它。用于解决小数据集 norm 不稳定导致的 nan。"
                 >
-                  <Select
-                    allowClear
-                    placeholder="默认（跟随 repoId）"
-                    options={[
-                      ...(trainForm.getFieldValue("repoId")
-                        ? [{ value: trainForm.getFieldValue("repoId"), label: `默认（${trainForm.getFieldValue("repoId")}）` }]
-                        : []),
-                      ...availableAssetNorms.map((a) => ({
-                        value: a.assetId,
-                        label: `${a.assetId}（${new Date(a.mtimeMs).toLocaleDateString()}）`,
-                      })),
-                    ]}
-                    onChange={(v) => trainForm.setFieldValue("assetId", v || undefined)}
-                  />
+                  <Space>
+                    <Select
+                      allowClear
+                      placeholder="默认（跟随 repoId）"
+                      style={{ minWidth: 280 }}
+                      options={[
+                        ...(trainForm.getFieldValue("repoId")
+                          ? [{ value: trainForm.getFieldValue("repoId"), label: `默认（${trainForm.getFieldValue("repoId")}）` }]
+                          : []),
+                        ...availableAssetNorms.map((a) => ({
+                          value: a.assetId,
+                          label: `${a.assetId}（${new Date(a.mtimeMs).toLocaleDateString()}）`,
+                        })),
+                      ]}
+                      onChange={(v) => trainForm.setFieldValue("assetId", v || undefined)}
+                    />
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        if (watchedConfig) {
+                          api.listConfigAssetNorms(watchedConfig)
+                            .then((r) => setAvailableAssetNorms(r.assets || []))
+                            .catch(() => setAvailableAssetNorms([]));
+                        }
+                      }}
+                    >
+                      刷新
+                    </Button>
+                  </Space>
                 </Form.Item>
 
                 <Space size="large" wrap>
