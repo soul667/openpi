@@ -1096,6 +1096,7 @@ _CONFIGS = [
             repo_id="luobai/pick_bag",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
+            assets=AssetsConfig(asset_id="luobai_pooled"),
         ),
         batch_size=32,
         # lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1133,6 +1134,7 @@ _CONFIGS = [
             repo_id="luobai/pick_bag",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
+            assets=AssetsConfig(assets_dir="./assets/pi05_mtbot", asset_id="luobai_pooled"),
         ),
         batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(

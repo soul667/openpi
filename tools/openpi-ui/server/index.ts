@@ -10,6 +10,7 @@ import { secretsRoutes } from "./routes/secrets.js";
 import { gripperRoutes } from "./routes/gripper.js";
 import { normStatsRoutes } from "./routes/norm-stats.js";
 import { remotesRoutes } from "./routes/remotes.js";
+import { checkpointsLocalRoutes } from "./routes/checkpoints-local.js";
 
 async function main() {
   const fastify = Fastify({
@@ -26,6 +27,7 @@ async function main() {
   await fastify.register(gripperRoutes);
   await fastify.register(normStatsRoutes);
   await fastify.register(remotesRoutes);
+  await fastify.register(checkpointsLocalRoutes);
 
   fastify.get("/api/health", async () => ({ ok: true, ts: Date.now() }));
 

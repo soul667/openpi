@@ -4,6 +4,7 @@ import {
   CloudDownloadOutlined,
   DatabaseOutlined,
   RocketOutlined,
+  ThunderboltOutlined,
   UnorderedListOutlined,
 } from "@ant-design/icons";
 import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
@@ -12,6 +13,7 @@ import { TrainLauncher } from "./pages/TrainLauncher";
 import { JobList } from "./pages/JobList";
 import { JobDetail } from "./pages/JobDetail";
 import { Checkpoints } from "./pages/Checkpoints";
+import { InferLauncher } from "./pages/InferLauncher";
 import { ActiveJobPill } from "./components/ActiveJobPill";
 import { GpuHeaderStrip } from "./components/GpuHeaderStrip";
 import { startJobsPolling } from "./store/jobs";
@@ -21,6 +23,7 @@ const { Sider, Header, Content } = Layout;
 const items = [
   { key: "/datasets", icon: <DatabaseOutlined />, label: <Link to="/datasets">Datasets</Link> },
   { key: "/train", icon: <RocketOutlined />, label: <Link to="/train">Train</Link> },
+  { key: "/infer", icon: <ThunderboltOutlined />, label: <Link to="/infer">Infer</Link> },
   { key: "/jobs", icon: <UnorderedListOutlined />, label: <Link to="/jobs">Jobs</Link> },
   { key: "/checkpoints", icon: <CloudDownloadOutlined />, label: <Link to="/checkpoints">Checkpoints</Link> },
 ];
@@ -72,6 +75,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/datasets" replace />} />
             <Route path="/datasets" element={<DatasetPicker />} />
             <Route path="/train" element={<TrainLauncher />} />
+            <Route path="/infer" element={<InferLauncher />} />
             <Route path="/jobs" element={<JobList />} />
             <Route path="/jobs/:id" element={<JobDetail />} />
             <Route path="/checkpoints" element={<Checkpoints />} />

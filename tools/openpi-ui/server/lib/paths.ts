@@ -14,3 +14,8 @@ export const HF_LEROBOT_CONTAINER = "/root/.cache/huggingface/lerobot";
 
 export const DOCKER_CONTAINER = process.env.OPENPI_UI_CONTAINER || "openpi-RcvkabOpenpi-1";
 export const SERVER_PORT = Number(process.env.OPENPI_UI_PORT || 18921);
+
+export const ZBL_DM_DIR = path.join(REPO_ROOT, "tools", "zbl_dm");
+export const INFER_LOGS_DIR = path.join(UI_ROOT, "logs", "infer");
+export const CHECKPOINTS_ROOT = path.join(REPO_ROOT, "checkpoints");
+export const WEB_DEV_PORT = Number(process.env.OPENPI_UI_WEB_PORT || 18920);

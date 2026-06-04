@@ -1,9 +1,15 @@
 import { FastifyInstance } from "fastify";
 import {
   clearWandbKey,
+  getInferCondaEnv,
+  getInferPreCommand,
   getPreCommand,
   getWandbKey,
   maskKey,
+  resetInferCondaEnv,
+  resetInferPreCommand,
+  setInferCondaEnv,
+  setInferPreCommand,
   resetPreCommand,
   setPreCommand,
   setWandbKey,
@@ -46,5 +52,26 @@ export async function secretsRoutes(fastify: FastifyInstance) {
   fastify.delete("/api/settings/pre-command", async () => {
     resetPreCommand();
     return { preCommand: getPreCommand() };
+  });
+
+  fastify.get("/api/settings/infer", async () => ({
+    condaEnv: getInferCondaEnv(),
+    inferPreCommand: getInferPreCommand(),
+  }));
+
+  fastify.put<{ Body: { condaEnv?: string; inferPreCommand?: string } }>("/api/settings/infer", async (req) => {
+    if (req.body?.condaEnv !== undefined) setInferCondaEnv(req.body.condaEnv);
+    if (req.body?.inferPreCommand !== undefined) setInferPreCommand(req.body.inferPreCommand);
+    return { condaEnv: getInferCondaEnv(), inferPreCommand: getInferPreCommand() };
+  });
+
+  fastify.delete("/api/settings/infer/conda-env", async () => {
+    resetInferCondaEnv();
+    return { condaEnv: getInferCondaEnv(), inferPreCommand: getInferPreCommand() };
+  });
+
+  fastify.delete("/api/settings/infer/pre-command", async () => {
+    resetInferPreCommand();
+    return { condaEnv: getInferCondaEnv(), inferPreCommand: getInferPreCommand() };
   });
 }

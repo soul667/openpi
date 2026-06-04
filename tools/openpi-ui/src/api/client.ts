@@ -1,4 +1,4 @@
-import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, JobRecord, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteCheckpointInfo, RemoteHost, TrainJobRequest } from './types';
+import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, InferJobRequest, JobRecord, LocalCheckpointInfo, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteCheckpointInfo, RemoteHost, TrainJobRequest } from './types';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
@@ -90,6 +90,22 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
+    }),
+  launchInfer: (req: InferJobRequest) =>
+    fetchJson<JobRecord>('/api/jobs/infer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  getLocalCheckpoints: () =>
+    fetchJson<{ checkpoints: LocalCheckpointInfo[] }>('/api/checkpoints/local'),
+  getInferSettings: () =>
+    fetchJson<{ condaEnv: string; inferPreCommand: string }>('/api/settings/infer'),
+  saveInferSettings: (body: { condaEnv?: string; inferPreCommand?: string }) =>
+    fetchJson<{ condaEnv: string; inferPreCommand: string }>('/api/settings/infer', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     }),
   listConfigAssetNorms: (configName: string) =>
     fetchJson<{ configName: string; assets: Array<{ assetId: string; path: string; mtimeMs: number; sizeBytes: number }> }>(

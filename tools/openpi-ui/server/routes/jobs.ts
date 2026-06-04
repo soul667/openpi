@@ -1,12 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
 import { FastifyInstance } from "fastify";
-import { LOGS_DIR, REPO_ROOT } from "../lib/paths.js";
+import { CHECKPOINTS_ROOT, INFER_LOGS_DIR, REPO_ROOT, ZBL_DM_DIR } from "../lib/paths.js";
 import {
   generateJobId,
+  inferLogFileFor,
   jobsStore,
   logFileFor,
 } from "../lib/jobs-store.js";
+import {
+  hostExec,
+  hostGetPgid,
+  hostKillPgid,
+  hostPidAlive,
+  hostPgrep,
+  hostPgrepAll,
+  hostPkill,
+} from "../lib/host-exec.js";
 import {
   dockerContainerRunning,
   dockerExecDetached,
@@ -17,10 +27,10 @@ import {
   dockerPkill,
   dockerPkill9,
 } from "../lib/docker.js";
-import { joinFlags } from "../lib/shell.js";
+import { joinFlags, shellQuoteSingle } from "../lib/shell.js";
 import { LogTailer, readLogChunk } from "../lib/log-tailer.js";
-import { getPreCommand, getWandbKey } from "../lib/secrets-store.js";
-import { JobRecord, NormStatsJobRequest, TrainJobRequest } from "../lib/types.js";
+import { getInferCondaEnv, getInferPreCommand, getPreCommand, getWandbKey } from "../lib/secrets-store.js";
+import { InferJobRequest, JobRecord, NormStatsJobRequest, TrainJobRequest } from "../lib/types.js";
 import {
   getRemoteHost,
   remoteAppendLog,
@@ -37,7 +47,14 @@ import {
   syncTrainingAssetsToRemote,
 } from "../lib/remotes.js";
 
-if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
+function ensureDir(dir: string): void {
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    console.warn(`[openpi-ui] could not create ${dir}:`, (e as Error).message);
+  }
+}
+ensureDir(INFER_LOGS_DIR);
 
 const REPO_ID_RE = /^[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+$/;
 const NAME_RE = /^[A-Za-z0-9_.\-]+$/;
@@ -74,6 +91,7 @@ function blockIfActive(targetHostId = "local", newCudaVisibleDevices?: string): 
   const newGpus = parseGpuList(newCudaVisibleDevices);
 
   for (const activeJob of activeJobs) {
+    if (activeJob.kind === "infer") continue;
     const activeRequest = activeJob.request as TrainJobRequest;
     const activeGpus = parseGpuList(activeRequest.cudaVisibleDevices);
     if (gpusOverlap(newGpus, activeGpus)) {
@@ -82,6 +100,146 @@ function blockIfActive(targetHostId = "local", newCudaVisibleDevices?: string): 
   }
 
   return null;
+}
+
+function parseZmqBindPort(bind: string): number | null {
+  const m = bind.match(/:(\d+)\s*$/);
+  if (!m) return null;
+  const port = parseInt(m[1], 10);
+  return Number.isFinite(port) ? port : null;
+}
+
+function blockInferConflict(req: InferJobRequest): string | null {
+  const newGpus = parseGpuList(req.cudaVisibleDevices);
+  const newPort = parseZmqBindPort(req.bind || "tcp://0.0.0.0:5555");
+  const active = jobsStore.list().filter((j) => j.kind === "infer" && (j.status === "queued" || j.status === "running"));
+  for (const job of active) {
+    const r = job.request as InferJobRequest;
+    const existingGpus = parseGpuList(r.cudaVisibleDevices);
+    if (gpusOverlap(newGpus, existingGpus)) {
+      return `GPU 与推理任务 ${job.id} 冲突（${r.cudaVisibleDevices ?? "all"}）`;
+    }
+    const existingPort = parseZmqBindPort(r.bind || "tcp://0.0.0.0:5555");
+    if (newPort !== null && existingPort !== null && newPort === existingPort) {
+      return `ZMQ 端口 ${newPort} 已被推理任务 ${job.id} 使用`;
+    }
+  }
+  return null;
+}
+
+function resolveCheckpointDir(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const abs = path.isAbsolute(trimmed) ? path.normalize(trimmed) : path.join(CHECKPOINTS_ROOT, trimmed);
+  if (!fs.existsSync(abs)) return null;
+  return abs;
+}
+
+function buildInferCmd(jobId: string, req: InferJobRequest): string {
+  const condaEnv = (req.condaEnv || getInferCondaEnv()).trim();
+  const inferPre = (getInferPreCommand() || "").trim();
+  const inferPreStr = inferPre ? `${inferPre} && ` : "";
+  const env: string[] = [];
+  if (req.cudaVisibleDevices) env.push(`CUDA_VISIBLE_DEVICES=${req.cudaVisibleDevices}`);
+  if ((req.backend || "jax") === "jax") {
+    env.push("JAX_PLATFORMS=cuda,cpu");
+    env.push("XLA_PYTHON_CLIENT_PREALLOCATE=false");
+    env.push("XLA_PYTHON_CLIENT_MEM_FRACTION=0.85");
+  }
+  const envStr = env.length ? `${env.join(" ")} ` : "";
+  const args = joinFlags([
+    `--backend=${req.backend || "jax"}`,
+    `--bind=${req.bind || "tcp://0.0.0.0:5555"}`,
+    `--config-name=${req.configName}`,
+    `--checkpoint-dir=${shellQuoteSingle(req.checkpointDir)}`,
+    `--prompt=${shellQuoteSingle(req.prompt)}`,
+    req.chunkSize !== undefined ? `--chunk-size=${req.chunkSize}` : null,
+    req.maxJointStepDeg !== undefined ? `--max-joint-step-deg=${req.maxJointStepDeg}` : null,
+    req.missingImage ? `--missing-image=${req.missingImage}` : null,
+    req.repoId ? `--repo-id=${req.repoId}` : null,
+  ]);
+  const logPath = inferLogFileFor(jobId);
+  const inner = `cd ${shellQuoteSingle(ZBL_DM_DIR)} && ${inferPreStr}${envStr}nohup conda run -n ${shellQuoteSingle(condaEnv)} --no-capture-output ./run_pi05_server.sh ${args} > ${shellQuoteSingle(logPath)} 2>&1 & echo __PID__:$! >> ${shellQuoteSingle(logPath)}`;
+  return inner;
+}
+
+async function attachInferLifecycle(jobId: string) {
+  const logFile = inferLogFileFor(jobId);
+  const interval = setInterval(async () => {
+    const cur = jobsStore.get(jobId);
+    if (!cur) {
+      clearInterval(interval);
+      return;
+    }
+    if (cur.status === "succeeded" || cur.status === "failed" || cur.status === "killed") {
+      clearInterval(interval);
+      return;
+    }
+    if (!cur.pid) {
+      const pidFromLog = parseInferPid(logFile);
+      if (pidFromLog) {
+        const pgid = await hostGetPgid(pidFromLog);
+        jobsStore.update(jobId, {
+          status: "running",
+          startedAt: cur.startedAt ?? Date.now(),
+          pid: pidFromLog,
+          pgid: pgid ?? null,
+        });
+      }
+    } else if (cur.pid) {
+      const alive = await hostPidAlive(cur.pid);
+      if (!alive) {
+        const exitCode = parseExitCode(logFile);
+        jobsStore.update(jobId, {
+          status: exitCode === 0 ? "succeeded" : "failed",
+          finishedAt: Date.now(),
+          exitCode: exitCode ?? null,
+        });
+        clearInterval(interval);
+        return;
+      }
+      if (cur.status === "queued") {
+        jobsStore.update(jobId, { status: "running", startedAt: cur.startedAt ?? Date.now() });
+      }
+    }
+  }, 1500);
+}
+
+function parseInferPid(logFile: string): number | null {
+  if (!fs.existsSync(logFile)) return null;
+  try {
+    const tail = fs.readFileSync(logFile, "utf8").slice(-4096);
+    const m = tail.match(/__PID__:(\d+)/);
+    if (m) return parseInt(m[1], 10);
+  } catch {}
+  return null;
+}
+
+async function killInferJobHard(jobId: string, pid?: number | null, pgid?: number | null): Promise<{ stillAlive: number[] }> {
+  const logMarker = `${jobId}.log`;
+  if (pgid) await hostKillPgid(pgid, "TERM");
+  else if (pid) {
+    try {
+      await hostExec(`kill -TERM ${pid} 2>/dev/null; exit 0`);
+    } catch {}
+  }
+  await hostPkill(logMarker);
+  await new Promise((r) => setTimeout(r, 2000));
+  let alive: number[] = [];
+  if (pid && (await hostPidAlive(pid))) alive.push(pid);
+  if (pgid && alive.length) await hostKillPgid(pgid, "KILL");
+  if (alive.length) {
+    await hostPkill(logMarker, true);
+    if (pid) {
+      try {
+        await hostExec(`kill -KILL ${pid} 2>/dev/null; exit 0`);
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    if (pid && (await hostPidAlive(pid))) alive = [pid];
+    else alive = [];
+  }
+  return { stillAlive: alive };
 }
 
 function buildNormCmd(jobId: string, req: NormStatsJobRequest): string {
@@ -508,6 +666,75 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     return jobsStore.get(jobId);
   });
 
+  fastify.post<{ Body: InferJobRequest }>("/api/jobs/infer", async (req, reply) => {
+    const body = req.body || ({} as InferJobRequest);
+    if (!body.configName || !NAME_RE.test(body.configName)) {
+      reply.code(400);
+      return { error: "invalid configName" };
+    }
+    if (!body.prompt || !body.prompt.trim()) {
+      reply.code(400);
+      return { error: "prompt is required" };
+    }
+    if (body.repoId && !REPO_ID_RE.test(body.repoId)) {
+      reply.code(400);
+      return { error: "invalid repoId" };
+    }
+    const checkpointAbs = resolveCheckpointDir(body.checkpointDir);
+    if (!checkpointAbs) {
+      reply.code(400);
+      return { error: "checkpoint directory not found" };
+    }
+    const resolvedBodyPreview: InferJobRequest = {
+      ...body,
+      checkpointDir: checkpointAbs,
+      bind: body.bind?.trim() || "tcp://0.0.0.0:5555",
+      cudaVisibleDevices: body.cudaVisibleDevices?.trim(),
+    };
+    const inferConflict = blockInferConflict(resolvedBodyPreview);
+    if (inferConflict) {
+      reply.code(409);
+      return { error: inferConflict };
+    }
+    const jobId = generateJobId(`infer_${body.configName}`);
+    const resolvedBody: InferJobRequest = {
+      ...body,
+      checkpointDir: checkpointAbs,
+      condaEnv: body.condaEnv?.trim() || getInferCondaEnv(),
+      bind: body.bind?.trim() || "tcp://0.0.0.0:5555",
+      backend: body.backend || "jax",
+      chunkSize: body.chunkSize ?? 1,
+      maxJointStepDeg: body.maxJointStepDeg ?? 2,
+      missingImage: body.missingImage || "error",
+    };
+    const cmd = buildInferCmd(jobId, resolvedBody);
+    const logFile = inferLogFileFor(jobId);
+    const job: JobRecord = {
+      id: jobId,
+      kind: "infer",
+      status: "queued",
+      command: cmd,
+      logFile,
+      containerName: "host-conda",
+      configName: body.configName,
+      repoId: body.repoId,
+      targetHostId: "local",
+      targetLabel: "Local (conda)",
+      createdAt: Date.now(),
+      request: resolvedBody,
+    };
+    jobsStore.add(job);
+    try {
+      await hostExec(cmd, { detached: true });
+    } catch (e: unknown) {
+      jobsStore.update(jobId, { status: "failed", finishedAt: Date.now(), exitCode: -1 });
+      reply.code(500);
+      return { error: (e as Error).message };
+    }
+    attachInferLifecycle(jobId);
+    return jobsStore.get(jobId);
+  });
+
   fastify.post<{ Params: { id: string } }>("/api/jobs/:id/kill", async (req, reply) => {
     const { id } = req.params;
     const job = jobsStore.get(id);
@@ -517,6 +744,23 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     }
     if (job.status === "succeeded" || job.status === "failed" || job.status === "killed") {
       return job;
+    }
+    if (job.kind === "infer") {
+      let pgid = job.pgid ?? null;
+      if (!pgid && job.pid) pgid = await hostGetPgid(job.pid);
+      const { stillAlive } = await killInferJobHard(id, job.pid, pgid);
+      const exitCode = parseExitCode(job.logFile);
+      const updated = jobsStore.update(id, {
+        status: "killed",
+        finishedAt: Date.now(),
+        exitCode: exitCode ?? null,
+        pgid,
+      });
+      if (stillAlive.length > 0) {
+        reply.code(202);
+        return { ...updated, warning: `still alive: ${stillAlive.join(",")}` };
+      }
+      return updated;
     }
     const remoteHost = getRemoteHost(job.targetHostId);
     let pgid = job.pgid ?? null;

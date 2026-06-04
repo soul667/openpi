@@ -21,7 +21,7 @@ export interface ConfigInfo {
   batchSize?: number;
 }
 
-export type JobKind = 'norm-stats' | 'train';
+export type JobKind = 'norm-stats' | 'train' | 'infer';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'killed';
 
 export interface JobRecord {
@@ -52,6 +52,30 @@ export interface NormStatsJobRequest {
   configName: string;
   repoId?: string;
   maxFrames?: number;
+}
+
+export interface InferJobRequest {
+  configName: string;
+  checkpointDir: string;
+  prompt: string;
+  bind?: string;
+  backend?: 'jax' | 'torch';
+  cudaVisibleDevices?: string;
+  chunkSize?: number;
+  maxJointStepDeg?: number;
+  missingImage?: 'error' | 'zeros';
+  repoId?: string;
+  condaEnv?: string;
+}
+
+export interface LocalCheckpointInfo {
+  relativePath: string;
+  absolutePath: string;
+  configName: string;
+  expName: string;
+  stepLabel: string;
+  mtimeMs: number;
+  backendHint?: 'jax' | 'torch';
 }
 
 export interface TrainJobRequest {

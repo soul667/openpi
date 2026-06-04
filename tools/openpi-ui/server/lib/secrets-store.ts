@@ -7,6 +7,8 @@ const SECRETS_FILE = path.join(DATA_DIR, "secrets.json");
 interface SecretsShape {
   wandbApiKey?: string;
   preCommand?: string;
+  inferCondaEnv?: string;
+  inferPreCommand?: string;
 }
 
 const DEFAULT_PRE_COMMAND = "export http_proxy=http://127.0.0.1:1081 https_proxy=http://127.0.0.1:1081";
@@ -68,4 +70,42 @@ export function resetPreCommand(): void {
 export function maskKey(key: string): string {
   if (key.length <= 8) return "***";
   return `${key.slice(0, 4)}…${key.slice(-4)}`;
+}
+
+const DEFAULT_INFER_CONDA_ENV = "pi05-infer";
+
+export function getInferCondaEnv(): string {
+  const v = readAll().inferCondaEnv;
+  if (v === undefined || !v.trim()) return DEFAULT_INFER_CONDA_ENV;
+  return v.trim();
+}
+
+export function setInferCondaEnv(name: string): void {
+  const s = readAll();
+  s.inferCondaEnv = name.trim();
+  writeAll(s);
+}
+
+export function resetInferCondaEnv(): void {
+  const s = readAll();
+  delete s.inferCondaEnv;
+  writeAll(s);
+}
+
+export function getInferPreCommand(): string {
+  const v = readAll().inferPreCommand;
+  if (v === undefined) return "";
+  return v;
+}
+
+export function setInferPreCommand(cmd: string): void {
+  const s = readAll();
+  s.inferPreCommand = cmd;
+  writeAll(s);
+}
+
+export function resetInferPreCommand(): void {
+  const s = readAll();
+  delete s.inferPreCommand;
+  writeAll(s);
 }

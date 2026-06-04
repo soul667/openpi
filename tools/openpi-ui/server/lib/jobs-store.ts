@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { DATA_DIR, JOBS_FILE } from "./paths.js";
+import { DATA_DIR, INFER_LOGS_DIR, JOBS_FILE } from "./paths.js";
 import { JobRecord } from "./types.js";
 
 class JobsStore extends EventEmitter {
@@ -95,4 +95,8 @@ export function generateJobId(prefix: string): string {
 
 export function logFileFor(repoRoot: string, jobId: string): string {
   return path.join(repoRoot, "logs", `${jobId}.log`);
+}
+
+export function inferLogFileFor(jobId: string): string {
+  return path.join(INFER_LOGS_DIR, `${jobId}.log`);
 }

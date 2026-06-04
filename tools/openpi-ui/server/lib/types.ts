@@ -1,4 +1,4 @@
-export type JobKind = "norm-stats" | "train";
+export type JobKind = "norm-stats" | "train" | "infer";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "killed";
 
@@ -101,6 +101,20 @@ export interface NormStatsJobRequest {
   maxFrames?: number;
 }
 
+export interface InferJobRequest {
+  configName: string;
+  checkpointDir: string;
+  prompt: string;
+  bind?: string;
+  backend?: "jax" | "torch";
+  cudaVisibleDevices?: string;
+  chunkSize?: number;
+  maxJointStepDeg?: number;
+  missingImage?: "error" | "zeros";
+  repoId?: string;
+  condaEnv?: string;
+}
+
 export interface JobRecord {
   id: string;
   kind: JobKind;
@@ -123,5 +137,5 @@ export interface JobRecord {
   pgid?: number | null;
   autoRestartCount?: number;
   autoRestartReason?: string;
-  request: TrainJobRequest | NormStatsJobRequest;
+  request: TrainJobRequest | NormStatsJobRequest | InferJobRequest;
 }
