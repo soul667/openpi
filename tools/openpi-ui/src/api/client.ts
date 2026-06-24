@@ -1,4 +1,4 @@
-import { DatasetInfo, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, InferJobRequest, JobRecord, LocalCheckpointInfo, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteCheckpointInfo, RemoteHost, TrainJobRequest } from './types';
+import { DatasetInfo, DatasetMergeRequest, DatasetMergeResult, ConfigInfo, GpuSnapshot, GripperApplyResult, GripperMode, GripperStats, InferJobRequest, JobRecord, LocalCheckpointInfo, NormStatsDetail, NormStatsJobRequest, NormStatsList, NormStatsOverrides, NormStatsPatchResult, RemoteCheckpointInfo, RemoteHost, TrainExperimentInfo, TrainJobRequest } from './types';
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, options);
@@ -20,6 +20,12 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskPrompts }),
+    }),
+  mergeDatasets: (req: DatasetMergeRequest) =>
+    fetchJson<DatasetMergeResult>('/api/datasets/merge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
     }),
   getConfigs: () => fetchJson<ConfigInfo[]>('/api/configs'),
   getJobs: () => fetchJson<JobRecord[]>('/api/jobs'),
@@ -99,6 +105,10 @@ export const api = {
     }),
   getLocalCheckpoints: () =>
     fetchJson<{ checkpoints: LocalCheckpointInfo[] }>('/api/checkpoints/local'),
+  getTrainCheckpoints: (configName?: string) =>
+    fetchJson<{ experiments: TrainExperimentInfo[] }>(
+      `/api/train-checkpoints${configName ? `?configName=${encodeURIComponent(configName)}` : ''}`,
+    ),
   getInferSettings: () =>
     fetchJson<{ condaEnv: string; inferPreCommand: string }>('/api/settings/infer'),
   saveInferSettings: (body: { condaEnv?: string; inferPreCommand?: string }) =>

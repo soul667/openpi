@@ -592,6 +592,7 @@ class TrainConfig:
     overwrite: bool = False
     # If true, will resume training from the last checkpoint.
     resume: bool = False
+    resume_step: int | None = None
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True

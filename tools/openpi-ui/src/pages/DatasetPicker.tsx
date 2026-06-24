@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Table, Button, Input, Space, Typography, Modal, message } from 'antd';
-import { SyncOutlined, ThunderboltOutlined, RocketOutlined, ExperimentOutlined, BugOutlined, EditOutlined } from '@ant-design/icons';
+import { Alert, Checkbox, Select, Table, Button, Input, Space, Typography, Modal, message, Tag } from 'antd';
+import { SyncOutlined, ThunderboltOutlined, RocketOutlined, ExperimentOutlined, BugOutlined, EditOutlined, MergeCellsOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { DatasetInfo } from '../api/types';
@@ -17,6 +17,11 @@ export const DatasetPicker: React.FC = () => {
   const [promptTarget, setPromptTarget] = useState<DatasetInfo | null>(null);
   const [promptText, setPromptText] = useState('');
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeSources, setMergeSources] = useState<string[]>([]);
+  const [mergeTargetRepoId, setMergeTargetRepoId] = useState('');
+  const [mergeOverwrite, setMergeOverwrite] = useState(false);
+  const [merging, setMerging] = useState(false);
   const navigate = useNavigate();
   const setPendingRepoId = useJobsStore(state => state.setPendingRepoId);
 
@@ -70,6 +75,42 @@ export const DatasetPicker: React.FC = () => {
       message.error(e instanceof Error ? e.message : '保存提示词失败');
     } finally {
       setSavingPrompt(false);
+    }
+  };
+
+  const resetMergeModal = () => {
+    setMergeOpen(false);
+    setMergeSources([]);
+    setMergeTargetRepoId('');
+    setMergeOverwrite(false);
+  };
+
+  const mergeTargetParts = mergeTargetRepoId.trim().split('/');
+  const validRepoId = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(mergeTargetRepoId.trim()) &&
+    !mergeTargetParts.some((part) => part === '.' || part === '..');
+  const selectedMergeDatasets = mergeSources
+    .map((repoId) => datasets.find((d) => d.repoId === repoId))
+    .filter((d): d is DatasetInfo => !!d);
+  const mergeEpisodes = selectedMergeDatasets.reduce((sum, d) => sum + (d.totalEpisodes || 0), 0);
+  const mergeFrames = selectedMergeDatasets.reduce((sum, d) => sum + (d.totalFrames || 0), 0);
+
+  const runMerge = async () => {
+    const targetRepoId = mergeTargetRepoId.trim();
+    if (mergeSources.length < 2 || !validRepoId) return;
+    setMerging(true);
+    try {
+      const result = await api.mergeDatasets({
+        sourceRepoIds: mergeSources,
+        targetRepoId,
+        overwrite: mergeOverwrite,
+      });
+      message.success(`合并完成：${result.targetRepoId}（${result.episodesMerged} episodes）`, 6);
+      resetMergeModal();
+      await fetchData();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '合并数据集失败');
+    } finally {
+      setMerging(false);
     }
   };
 
@@ -200,6 +241,7 @@ export const DatasetPicker: React.FC = () => {
             onChange={e => setSearch(e.target.value)} 
             style={{ width: 250 }}
           />
+          <Button icon={<MergeCellsOutlined />} onClick={() => setMergeOpen(true)}>合并数据集</Button>
           <Button icon={<SyncOutlined />} onClick={fetchData} loading={loading}>Refresh</Button>
         </Space>
       </div>
@@ -220,6 +262,70 @@ export const DatasetPicker: React.FC = () => {
         dataset={normStatsTarget}
         onClose={() => setNormStatsTarget(null)}
       />
+      <Modal
+        title="合并数据集"
+        open={mergeOpen}
+        okText="执行合并"
+        cancelText="取消"
+        confirmLoading={merging}
+        okButtonProps={{ disabled: mergeSources.length < 2 || !validRepoId }}
+        onOk={runMerge}
+        onCancel={resetMergeModal}
+        width={720}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="合并后请重新计算 Norm Stats"
+            description="合并会写入 episodes_stats.jsonl 等 LeRobot 元数据，但不会合并或更新训练用 norm_stats.json。合并后若训练仍报错，请确认源数据集本身包含 episodes_stats.jsonl。"
+          />
+          <div>
+            <Typography.Text strong>源数据集</Typography.Text>
+            <Select
+              mode="multiple"
+              allowClear
+              showSearch
+              value={mergeSources}
+              onChange={setMergeSources}
+              placeholder="选择至少两个 repoId"
+              style={{ width: '100%', marginTop: 8 }}
+              options={datasets.map((d) => ({ label: d.repoId, value: d.repoId }))}
+            />
+          </div>
+          <div>
+            <Typography.Text strong>目标 Repo ID</Typography.Text>
+            <Input
+              value={mergeTargetRepoId}
+              onChange={(e) => setMergeTargetRepoId(e.target.value)}
+              placeholder="例如：luobai/merged_dataset"
+              status={mergeTargetRepoId && !validRepoId ? 'error' : undefined}
+              style={{ marginTop: 8 }}
+            />
+            {mergeTargetRepoId && !validRepoId && (
+              <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                请输入 user/dataset 格式，只包含字母、数字、下划线、点和短横线。
+              </Typography.Text>
+            )}
+          </div>
+          <Checkbox checked={mergeOverwrite} onChange={(e) => setMergeOverwrite(e.target.checked)}>
+            覆盖已有目标数据集
+          </Checkbox>
+          <Space wrap>
+            <Tag color="blue">sources: {mergeSources.length}</Tag>
+            <Tag color="green">episodes: {mergeEpisodes || '-'}</Tag>
+            <Tag color="purple">frames: {mergeFrames || '-'}</Tag>
+          </Space>
+          {mergeOverwrite && (
+            <Alert
+              type="error"
+              showIcon
+              message="覆盖会删除目标数据集后重新生成"
+              description="请确认目标 Repo ID 不是仍需保留的数据集。"
+            />
+          )}
+        </Space>
+      </Modal>
       <Modal
         title={promptTarget ? `修改提示词：${promptTarget.repoId}` : '修改提示词'}
         open={!!promptTarget}

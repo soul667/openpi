@@ -186,3 +186,4 @@ tools/openpi-ui/node_modules/
 tools/openpi-ui/dist/
 !tools/openpi-ui/server/lib/
 !tools/openpi-ui/server/lib/remotes.ts
+.omo/run-continuation/**

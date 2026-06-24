@@ -182,6 +182,40 @@ export async function syncTrainingAssetsToRemote(host: RemoteHost, configName: s
   });
 }
 
+const TRAINING_CODE_REL_PATHS = [
+  "scripts/train.py",
+  "scripts/train_pytorch.py",
+  "src/openpi/training/config.py",
+  "src/openpi/training/checkpoints.py",
+];
+
+export async function syncTrainingCodeToRemote(host: RemoteHost): Promise<void> {
+  for (const rel of TRAINING_CODE_REL_PATHS) {
+    const localFile = path.join(REPO_ROOT, rel);
+    if (!fs.existsSync(localFile)) continue;
+    const remoteFile = path.posix.join(host.repoRoot, rel);
+    const remoteParent = path.posix.dirname(remoteFile);
+    await sshExec(host, `mkdir -p ${shellArg(remoteParent)}`);
+    await execFileAsync("rsync", ["-az", "-e", rsyncSsh(host), localFile, `${host.sshTarget}:${remoteFile}`], {
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  }
+}
+
+export async function remoteTrainSupportsResumeStep(host: RemoteHost): Promise<boolean> {
+  const container = host.containerName || "openpi";
+  try {
+    const { stdout } = await sshExec(
+      host,
+      `docker exec ${shellArg(container)} bash -lc 'cd /app && uv run scripts/train.py --help 2>&1'`,
+      4 * 1024 * 1024,
+    );
+    return stdout.includes("resume-step") || stdout.includes("resume_step");
+  } catch {
+    return false;
+  }
+}
+
 function parseCsv(text: string): string[][] {
   return text.trim().split("\n").filter((l) => l.length > 0).map((l) => l.split(",").map((c) => c.trim()));
 }
@@ -238,6 +272,40 @@ export async function listRemoteCheckpoints(host: RemoteHost): Promise<RemoteChe
         mtimeMs: Math.round(parseFloat(mtimeRaw || "0") * 1000),
       };
     });
+}
+
+function hostRepoPathToContainerApp(host: RemoteHost, hostAbsPath: string): string {
+  const root = host.repoRoot.replace(/\/$/, "");
+  const norm = hostAbsPath.replace(/\/$/, "");
+  if (norm === root || norm.startsWith(`${root}/`)) {
+    return `/app${norm.slice(root.length)}`;
+  }
+  return hostAbsPath;
+}
+
+export async function prepareRemoteCheckpointDirForRsync(host: RemoteHost, runRelativePath: string): Promise<void> {
+  if (!runRelativePath || runRelativePath.includes("..") || runRelativePath.startsWith("/")) {
+    throw new Error("invalid checkpoint run path");
+  }
+  const remoteRoot = host.checkpointRoot || path.posix.join(host.repoRoot, "checkpoints");
+  const remoteRunHost = path.posix.join(remoteRoot, runRelativePath);
+  const remoteRunInContainer = hostRepoPathToContainerApp(host, remoteRunHost);
+  const container = host.containerName || "openpi";
+  const script = [
+    `uid=$(id -u)`,
+    `gid=$(id -g)`,
+    `run_host=${shellArg(remoteRunHost)}`,
+    `run_ctr=${shellArg(remoteRunInContainer)}`,
+    `ctr=${shellArg(container)}`,
+    `if docker inspect -f '{{.State.Running}}' "$ctr" 2>/dev/null | grep -q true; then`,
+    `  docker exec "$ctr" mkdir -p "$run_ctr"`,
+    `  docker exec "$ctr" chown -R "$uid:$gid" "$run_ctr"`,
+    `else`,
+    `  mkdir -p "$run_host" 2>/dev/null || sudo mkdir -p "$run_host"`,
+    `  chown -R "$uid:$gid" "$run_host" 2>/dev/null || sudo chown -R "$uid:$gid" "$run_host"`,
+    `fi`,
+  ].join("\n");
+  await sshExec(host, script, 8 * 1024 * 1024);
 }
 
 export async function pullRemoteCheckpoint(host: RemoteHost, relativePath: string): Promise<{ localPath: string; remotePath: string }> {

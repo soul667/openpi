@@ -22,6 +22,7 @@ import { ConfigInfo, DatasetInfo, GpuSnapshot, JobRecord, RemoteHost } from "../
 import { useJobsStore } from "../store/jobs";
 import { WandbSecretCard } from "../components/WandbSecretCard";
 import { PreCommandCard } from "../components/PreCommandCard";
+import { ResumeSelection, TrainResumeCard } from "../components/TrainResumeCard";
 
 const WANDB_KEY_STORAGE = "openpi-ui:wandb-key";
 
@@ -48,6 +49,7 @@ export function TrainLauncher() {
   const [availableAssetNorms, setAvailableAssetNorms] = useState<Array<{ assetId: string; path: string; mtimeMs: number; sizeBytes: number }>>([]);
   const initialTab = searchParams.get("tab") === "norm" ? "norm" : "train";
   const [tab, setTab] = useState(initialTab);
+  const [resumeSelection, setResumeSelection] = useState<ResumeSelection | null>(null);
 
   const watchedConfig = Form.useWatch("configName", trainForm);
 
@@ -143,6 +145,16 @@ export function TrainLauncher() {
     api.getRemoteGpu(targetHostId).then(setRemoteGpu).catch((e) => message.error(`remote gpu: ${e.message}`));
   }, [targetHostId]);
 
+  useEffect(() => {
+    if (!resumeSelection) return;
+    trainForm.setFieldsValue({
+      expName: resumeSelection.expName,
+      resume: true,
+      overwrite: false,
+      ...(resumeSelection.usePytorch !== undefined ? { usePytorch: resumeSelection.usePytorch } : {}),
+    });
+  }, [resumeSelection, trainForm]);
+
   const submitTrain = async () => {
     const values = await trainForm.validateFields();
     const cuda = (values.cudaVisibleDevices as string[]).join(",");
@@ -150,7 +162,7 @@ export function TrainLauncher() {
     try {
       const job = await api.launchTrain({
         configName: values.configName,
-        expName: values.expName,
+        expName: resumeSelection?.expName || values.expName,
         repoId: values.repoId,
         assetId: values.assetId,
         numTrainSteps: values.numTrainSteps,
@@ -161,12 +173,16 @@ export function TrainLauncher() {
         keepPeriod: values.keepPeriod,
         targetHostId: values.targetHostId,
         syncDataset: values.syncDataset,
-        overwrite: values.overwrite,
-        resume: values.resume,
+        overwrite: resumeSelection ? false : values.overwrite,
+        resume: resumeSelection ? true : values.resume,
+        resumeStep: resumeSelection?.resumeStep,
+        checkpointRunRelativePath: resumeSelection?.checkpointRunRelativePath,
+        checkpointSource: resumeSelection?.checkpointSource,
+        checkpointHostId: resumeSelection?.checkpointHostId,
         wandbEnabled: values.wandbEnabled,
         cudaVisibleDevices: cuda,
         xlaMemFraction: values.xlaMemFraction,
-        usePytorch: values.usePytorch,
+        usePytorch: resumeSelection?.usePytorch ?? values.usePytorch,
         pytorchTrainingPrecision: values.pytorchTrainingPrecision,
       });
       navigate(`/jobs/${job.id}`);
@@ -316,11 +332,17 @@ export function TrainLauncher() {
                     />
                   </Form.Item>
                 )}
-                <Form.Item name="configName" label="Config" rules={[{ required: true }]}> 
+                <Form.Item name="configName" label="Config" rules={[{ required: true }]}>
                   {configSelect}
                 </Form.Item>
-                <Form.Item name="expName" label="Experiment name" rules={[{ required: true }]}>
-                  <Input />
+                <TrainResumeCard configName={watchedConfig} onChange={setResumeSelection} />
+                <Form.Item
+                  name="expName"
+                  label="Experiment name"
+                  rules={[{ required: true }]}
+                  tooltip={resumeSelection ? "由所选 checkpoint 自动填写" : undefined}
+                >
+                  <Input disabled={!!resumeSelection} />
                 </Form.Item>
                 <Form.Item
                   name="repoId"

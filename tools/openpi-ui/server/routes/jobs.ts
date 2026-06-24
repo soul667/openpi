@@ -45,7 +45,10 @@ import {
   remoteReadLogChunk,
   syncDatasetToRemote,
   syncTrainingAssetsToRemote,
+  syncTrainingCodeToRemote,
+  remoteTrainSupportsResumeStep,
 } from "../lib/remotes.js";
+import { ensureCheckpointRunOnLocal, syncCheckpointRunToRemote } from "../lib/train-checkpoints.js";
 
 function ensureDir(dir: string): void {
   try {
@@ -306,6 +309,7 @@ function buildTrainCmd(jobId: string, req: TrainJobRequest, redact: boolean, app
       req.keepPeriod !== undefined ? `--keep-period=${req.keepPeriod}` : null,
       req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
       req.resume ? "--resume" : null,
+      req.resumeStep !== undefined ? `--resume-step=${req.resumeStep}` : null,
       req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
       req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
       req.pytorchTrainingPrecision ? `--pytorch-training-precision=${req.pytorchTrainingPrecision}` : null,
@@ -326,6 +330,7 @@ function buildTrainCmd(jobId: string, req: TrainJobRequest, redact: boolean, app
       req.keepPeriod !== undefined ? `--keep-period=${req.keepPeriod}` : null,
       req.overwrite !== undefined ? (req.overwrite ? "--overwrite" : "--no-overwrite") : null,
       req.resume ? "--resume" : null,
+      req.resumeStep !== undefined ? `--resume-step=${req.resumeStep}` : null,
       req.wandbEnabled !== undefined ? (req.wandbEnabled ? "--wandb-enabled" : "--no-wandb-enabled") : null,
       req.assetId ? `--data.assets.asset-id=${req.assetId}` : null,
     ];
@@ -609,13 +614,44 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       return { error: "another job is active", activeJob: active };
     }
 
-    const replaceInfo = replaceNormForRun(body.configName, body.repoId, body.assetId);
+    let trainBody: TrainJobRequest = { ...body };
+    const ckRel = trainBody.checkpointRunRelativePath?.trim();
+    if (ckRel) {
+      if (ckRel.includes("..") || ckRel.startsWith("/")) {
+        reply.code(400);
+        return { error: "invalid checkpointRunRelativePath" };
+      }
+      const parts = ckRel.split("/").filter(Boolean);
+      if (parts.length < 2) {
+        reply.code(400);
+        return { error: "checkpoint path must be configName/expName" };
+      }
+      if (parts[0] !== trainBody.configName) {
+        reply.code(400);
+        return { error: `checkpoint config ${parts[0]} does not match training config ${trainBody.configName}` };
+      }
+      trainBody.expName = parts[1];
+      trainBody.resume = true;
+      trainBody.overwrite = false;
+      try {
+        await ensureCheckpointRunOnLocal(trainBody.checkpointSource || "local", ckRel, trainBody.checkpointHostId);
+        if (remoteHost) await syncCheckpointRunToRemote(remoteHost, ckRel);
+      } catch (e: unknown) {
+        reply.code(500);
+        return { error: `checkpoint sync failed: ${(e as Error).message}` };
+      }
+    }
+
+    const replaceInfo = replaceNormForRun(trainBody.configName, trainBody.repoId, trainBody.assetId);
 
     let containerRunning = false;
     try {
-      if (remoteHost && body.syncDataset !== false) {
-        await syncDatasetToRemote(remoteHost, body.repoId);
-        await syncTrainingAssetsToRemote(remoteHost, body.configName);
+      if (remoteHost) {
+        await syncTrainingCodeToRemote(remoteHost);
+        if (trainBody.syncDataset !== false) {
+          await syncDatasetToRemote(remoteHost, trainBody.repoId);
+          await syncTrainingAssetsToRemote(remoteHost, trainBody.configName);
+        }
       }
       containerRunning = remoteHost ? await remoteContainerRunning(remoteHost) : await dockerContainerRunning();
     } catch (e: unknown) {
@@ -626,13 +662,19 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       reply.code(503);
       return { error: remoteHost ? `remote docker container is not running: ${remoteHost.label}` : "docker container is not running" };
     }
-    const jobId = generateJobId(`train_${body.expName}`);
-    const resolvedKey = body.wandbApiKey?.trim() || getWandbKey() || undefined;
-    if (body.wandbEnabled && !resolvedKey) {
+    const jobId = generateJobId(`train_${trainBody.expName}`);
+    const resolvedKey = trainBody.wandbApiKey?.trim() || getWandbKey() || undefined;
+    if (trainBody.wandbEnabled && !resolvedKey) {
       reply.code(400);
       return { error: "wandb is enabled but no API key is saved; set the key in the WandB card or disable wandb" };
     }
-    const resolvedBody: TrainJobRequest = { ...body, wandbApiKey: resolvedKey };
+    let resolvedBody: TrainJobRequest = { ...trainBody, wandbApiKey: resolvedKey };
+    if (remoteHost && resolvedBody.resumeStep !== undefined) {
+      const supports = await remoteTrainSupportsResumeStep(remoteHost);
+      if (!supports) {
+        resolvedBody = { ...resolvedBody, resumeStep: undefined };
+      }
+    }
     const realCmd = buildTrainCmd(jobId, resolvedBody, false);
     const safeCmd = buildTrainCmd(jobId, resolvedBody, true);
     const remoteLogFile = remoteHost ? remoteLogFileFor(remoteHost, jobId) : undefined;
@@ -644,14 +686,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       logFile: remoteHost && remoteLogFile ? `${remoteHost.sshTarget}:${remoteLogFile}` : logFileFor(REPO_ROOT, jobId),
       remoteLogFile,
       containerName: remoteHost?.containerName || process.env.OPENPI_UI_CONTAINER || "openpi-RcvkabOpenpi-1",
-      configName: body.configName,
-      expName: body.expName,
-      repoId: body.repoId,
-      assetId: body.assetId,
-      targetHostId: body.targetHostId || "local",
+      configName: trainBody.configName,
+      expName: trainBody.expName,
+      repoId: trainBody.repoId,
+      assetId: trainBody.assetId,
+      targetHostId: trainBody.targetHostId || "local",
       targetLabel: remoteHost?.label || "Local",
       createdAt: Date.now(),
-      request: { ...body, wandbApiKey: resolvedKey ? "***" : undefined },
+      request: { ...trainBody, wandbApiKey: resolvedKey ? "***" : undefined },
     };
     jobsStore.add(job);
     try {

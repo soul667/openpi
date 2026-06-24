@@ -194,8 +194,8 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             wandb.log({"checkpoint_step": global_step}, step=global_step)
 
 
-def load_checkpoint(model, optimizer, checkpoint_dir, device):
-    """Load the latest checkpoint and return the global step."""
+def load_checkpoint(model, optimizer, checkpoint_dir, device, step: int | None = None):
+    """Load a checkpoint step and return the global step."""
     checkpoint_steps = [
         int(d.name)
         for d in checkpoint_dir.iterdir()
@@ -205,7 +205,12 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
     if not checkpoint_steps:
         raise FileNotFoundError(f"No checkpoints found in {checkpoint_dir}")
 
-    latest_step = max(checkpoint_steps)
+    load_step = step if step is not None else max(checkpoint_steps)
+    if load_step not in checkpoint_steps:
+        raise FileNotFoundError(
+            f"Checkpoint step {load_step} not found in {checkpoint_dir}; available: {sorted(checkpoint_steps)}"
+        )
+    latest_step = load_step
     ckpt_dir = checkpoint_dir / f"{latest_step}"
 
     # Clear memory before loading checkpoints
@@ -318,7 +323,7 @@ def train_loop(config: _config.TrainConfig):
         exp_checkpoint_dir = config.checkpoint_dir
         if exp_checkpoint_dir.exists():
             # Use validation to find the latest working checkpoint
-            latest_step = get_latest_checkpoint_step(exp_checkpoint_dir)
+            latest_step = config.resume_step if config.resume_step is not None else get_latest_checkpoint_step(exp_checkpoint_dir)
             if latest_step is not None:
                 resuming = True
                 logging.info(
@@ -466,7 +471,7 @@ def train_loop(config: _config.TrainConfig):
     # Load checkpoint if resuming
     global_step = 0
     if resuming:
-        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
+        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device, step=config.resume_step)
         logging.info(f"Resumed training from step {global_step}")
 
     def lr_schedule(step: int):

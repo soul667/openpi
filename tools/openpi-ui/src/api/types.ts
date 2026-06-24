@@ -13,6 +13,23 @@ export interface DatasetInfo {
   lastModifiedMs: number;
 }
 
+export interface DatasetMergeRequest {
+  sourceRepoIds: string[];
+  targetRepoId: string;
+  overwrite?: boolean;
+}
+
+export interface DatasetMergeResult {
+  ok: boolean;
+  targetRepoId: string;
+  targetDir: string;
+  sourceRepoIds: string[];
+  episodesMerged: number;
+  framesMerged: number;
+  tasksMerged: number;
+  filesCopied: number;
+}
+
 export interface ConfigInfo {
   name: string;
   modelType?: string;
@@ -99,6 +116,23 @@ export interface TrainJobRequest {
   assetId?: string;
   usePytorch?: boolean;
   pytorchTrainingPrecision?: 'bfloat16' | 'float32';
+  resumeStep?: number;
+  checkpointSource?: 'local' | 'remote';
+  checkpointHostId?: string;
+  checkpointRunRelativePath?: string;
+}
+
+export interface TrainExperimentInfo {
+  source: 'local' | 'remote';
+  hostId?: string;
+  hostLabel?: string;
+  configName: string;
+  expName: string;
+  runRelativePath: string;
+  localRunPath: string;
+  mtimeMs: number;
+  steps: number[];
+  backendHint?: 'jax' | 'torch';
 }
 
 export interface RemoteHost {
